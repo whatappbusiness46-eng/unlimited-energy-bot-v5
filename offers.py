@@ -22,14 +22,6 @@ logger = logging.getLogger(__name__)
 OFFERS: Dict[str, Dict[str, Any]] = {}
 
 
-
-def _display_limit_offers(offers):
-    try:
-        limit = max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "3")))
-    except Exception:
-        limit = 3
-    return list(offers or [])[:limit]
-
 def _get_user(user_id):
     try:
         return get_user(user_id, create=False)
@@ -103,7 +95,7 @@ def offers_menu(user_id: int):
     keyboard = []
     live = _live_offers(user_id)
 
-    for item in live[:50]:
+    for item in live[:5]:
         provider = str(item.get("provider", "provider"))
         offer_id = str(item.get("offer_id", ""))
         title = str(item.get("title", "Offer"))
@@ -154,7 +146,7 @@ async def offers_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "only after the provider confirms the conversion.",
             "",
         ]
-        for item in live[:30]:
+        for item in live[:5]:
             lines.append(
                 f"• {item.get('title', 'Offer')} — "
                 f"Earn +{_reward_points(item.get('provider_reward', 0))} Points"
@@ -212,7 +204,7 @@ async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.edit_message_text(
         "🎁 **OFFER DETAILS**\n\n"
         f"📌 {offer.get('title', 'Offer')}\n"
-        f"🏷 Provider: {provider}\n"
+        
         f"💵 Provider payout: ${offer.get('provider_reward', 0)}\n"
         f"💰 Your reward: +{_reward_points(offer.get('provider_reward', 0))} Points\n\n"
         f"{offer.get('description', '')}\n\n"

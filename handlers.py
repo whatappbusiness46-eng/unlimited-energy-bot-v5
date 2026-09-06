@@ -15,7 +15,7 @@ from telegram import (
 
 from telegram.ext import ContextTypes
 
-from config import ADMIN_USERNAME
+from config import ADMIN_USERNAME, FORCE_JOIN_ENABLED
 
 from database import (
     create_user,
@@ -26,7 +26,6 @@ from database import (
 )
 
 from config import (
-    FORCE_JOIN_ENABLED,
     GROUPS,
     DAILY_BONUS,
     DAILY_XP,
@@ -165,9 +164,6 @@ def main_menu():
 
 def force_join_menu():
 
-    if not FORCE_JOIN_ENABLED:
-        return InlineKeyboardMarkup([])
-
     keyboard = []
 
     for index, group in enumerate(
@@ -207,9 +203,6 @@ async def check_force_join(
     user_id,
     context,
 ):
-
-    if not FORCE_JOIN_ENABLED:
-        return []
 
     not_joined = []
 
@@ -321,27 +314,19 @@ async def start(
     # Force Join
     # --------------------------------------------------------
 
-    not_joined = await check_force_join(
-        user_id,
-        context,
-    )
-
-    if not_joined:
-
-        await update.message.reply_text(
-
-            "🔒 **JOIN REQUIRED**\n\n"
-            "Before using Unlimited Energy Bot, "
-            "please join all of our official groups.\n\n"
-            "After joining all groups, press "
-            "✅ Verify Join.",
-
-            reply_markup=force_join_menu(),
-
-            parse_mode="Markdown",
-        )
-
-        return
+    if FORCE_JOIN_ENABLED:
+        not_joined = await check_force_join(user_id, context)
+        if not_joined:
+            await update.message.reply_text(
+                "🔒 **JOIN REQUIRED**\n\n"
+                "Before using Unlimited Energy Bot, "
+                "please join all of our official groups.\n\n"
+                "After joining all groups, press "
+                "✅ Verify Join.",
+                reply_markup=force_join_menu(),
+                parse_mode="Markdown",
+            )
+            return
 
     # --------------------------------------------------------
     # Home

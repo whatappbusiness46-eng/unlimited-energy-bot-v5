@@ -69,8 +69,8 @@ except ValueError:
 # FORCE JOIN
 # ============================================================
 
-# Disabled by default so users can use the bot without mandatory group joins.
-FORCE_JOIN_ENABLED = os.getenv("FORCE_JOIN_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+FORCE_JOIN_ENABLED = False  # Disabled by default: bot works without mandatory group joining.
+
 
 GROUPS = [
     "@UnlimitedEnergyTasks",

@@ -1,5 +1,3 @@
-import os
-CPAGRIP_OFFER_LIMIT = max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "3")))
 # provider_integrations.py
 # CPAGrip-only live offer + verified postback integration.
 
@@ -8,6 +6,7 @@ import hmac
 import json
 import xml.etree.ElementTree as ET
 import logging
+import os
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, Optional
@@ -32,14 +31,6 @@ try:
 except Exception:
     logger.exception("Provider indexes could not be created.")
 
-
-
-def _apply_cpagrip_limit(offers):
-    try:
-        limit = max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "3")))
-    except Exception:
-        limit = 3
-    return list(offers or [])[:limit]
 
 def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
@@ -270,13 +261,8 @@ def delete_provider_offer(provider: str, offer_id: str):
     return True
 
 
-def _reward_points(reward, member_reward_points=None):
-    """Convert provider payout to points; optional explicit member reward overrides payout calculation."""
-    if member_reward_points is not None:
-        try:
-            return max(0, int(member_reward_points))
-        except (TypeError, ValueError):
-            pass
+def _reward_points(reward):
+    """Convert provider USD payout to member points using the configured share."""
     try:
         amount = Decimal(str(reward))
         rate = Decimal(_env("REWARD_POINTS_PER_USD", "1000"))

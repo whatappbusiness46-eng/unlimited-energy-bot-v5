@@ -2730,7 +2730,7 @@ async def admin_text_handler(
             await update.message.reply_text("❌ Invalid shortlink values.", reply_markup=admin_back())
             return True
         final_url = url
-        if provider not in {"manual", ""}:
+        if provider in {"shrtfly", "shrinkme"}:
             result = shorten_with_provider(provider, url, alias=sid, ad_type=1)
             if not result.get("ok"):
                 await update.message.reply_text(
@@ -2739,8 +2739,9 @@ async def admin_text_handler(
                 )
                 return True
             final_url = result["short_url"]
-            # Link creation is separate from completion verification. Never
-            # award points unless a compliant verified callback is available.
+            # These APIs document link creation, not verified completion.
+            # Keep reward at zero unless a compliant server-to-server reward
+            # mechanism is separately documented/configured.
             reward = 0
         if not register_shortlink(sid, name, final_url, reward=reward, cooldown=cooldown):
             await update.message.reply_text("❌ Could not save shortlink.", reply_markup=admin_back())
@@ -2748,7 +2749,7 @@ async def admin_text_handler(
         context.user_data.clear()
         await update.message.reply_text(
             f"✅ Shortlink `{sid}` saved ({provider}).\n\n"
-            + ("🔗 Provider API generated the short URL. Reward remains 0 until a compliant verified completion callback is configured." if provider not in {"manual", ""} else "🔗 Manual URL saved."),
+            + ("🔗 Provider API generated the short URL. Reward remains 0 because the documented API does not provide verified completion callbacks." if provider in {"shrtfly", "shrinkme"} else "🔗 Manual/provider URL saved."),
             reply_markup=admin_back(),
             parse_mode="Markdown",
         )
