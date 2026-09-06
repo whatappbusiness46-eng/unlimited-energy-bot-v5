@@ -885,7 +885,7 @@ async def show_help(
         "📜 Activity — View recent activity\n\n"
 
         "🆘 Need help?\n"
-        "Contact the Admin: @mdrifatowner05",
+        "Contact the support grupe: @UnlimitedEnergySupport",
 
         reply_markup=home_keyboard(),
 
