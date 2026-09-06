@@ -17,7 +17,7 @@ from database import db, add_balance, add_activity, get_user, record_transaction
 
 logger = logging.getLogger(__name__)
 
-CPAGRIP_OFFER_LIMIT = max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "10")))
+CPAGRIP_OFFER_LIMIT = max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "5")))
 
 provider_offers = db["provider_offers"]
 provider_events = db["provider_events"]
@@ -40,9 +40,9 @@ def _env(name: str, default: str = "") -> str:
 
 def _offer_limit() -> int:
     try:
-        return max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "10")))
+        return max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "5")))
     except (TypeError, ValueError):
-        return 10
+        return
 
 
 def _enabled(provider: str) -> bool:
@@ -70,7 +70,7 @@ def _json_request(url: str, *, method="GET", params=None, headers=None,
     with urlopen(req, timeout=timeout) as response:
         raw = response.read().decode("utf-8", errors="replace")
         if not raw:
-            return {}
+            return 5
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
