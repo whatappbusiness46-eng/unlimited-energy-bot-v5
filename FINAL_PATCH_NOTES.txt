@@ -1,0 +1,7 @@
+Combined patch includes the current project plus the requested safe fixes/templates.
+Payment Complete task: 10 points, 24h cooldown, 5 XP, 1 energy.
+CPAGrip user share: configured by CPAGRIP_USER_REWARD_PERCENT (default 40%).
+Minimum withdrawal: 1000 points where supported by current config.
+VIP wheel target: VIP1=1, VIP2=2, VIP3=3, VIP4=4, VIP5=5 spins where supported by current VIP config.
+Shortlink providers remain subject to their own incentivized-traffic policies; no fake completion verification is added.
+Before deploying, keep a backup of the current working project/database.
