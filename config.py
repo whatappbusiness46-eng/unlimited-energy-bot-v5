@@ -69,7 +69,7 @@ except ValueError:
 # FORCE JOIN
 # ============================================================
 
-FORCE_JOIN_ENABLED = False  # Disabled by default: bot works without mandatory group joining.
+FORCE_JOIN_ENABLED = true  # Disabled by default: bot works without mandatory group joining.
 
 
 GROUPS = [
