@@ -1,3 +1,4 @@
+CPAGRIP_OFFER_LIMIT = max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "3")))
 # provider_integrations.py
 # CPAGrip-only live offer + verified postback integration.
 
@@ -31,6 +32,14 @@ try:
 except Exception:
     logger.exception("Provider indexes could not be created.")
 
+
+
+def _apply_cpagrip_limit(offers):
+    try:
+        limit = max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "3")))
+    except Exception:
+        limit = 3
+    return list(offers or [])[:limit]
 
 def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
@@ -261,8 +270,13 @@ def delete_provider_offer(provider: str, offer_id: str):
     return True
 
 
-def _reward_points(reward):
-    """Convert provider USD payout to member points using the configured share."""
+def _reward_points(reward, member_reward_points=None):
+    """Convert provider payout to points; optional explicit member reward overrides payout calculation."""
+    if member_reward_points is not None:
+        try:
+            return max(0, int(member_reward_points))
+        except (TypeError, ValueError):
+            pass
     try:
         amount = Decimal(str(reward))
         rate = Decimal(_env("REWARD_POINTS_PER_USD", "1000"))
@@ -375,43 +389,17 @@ def process_postback(provider: str, params: Dict[str, Any]):
 
 
 
-def _json_path(payload: Any, path: str):
-    """Read a simple dot-separated path from a JSON response."""
-    value = payload
-    for part in str(path or "").split("."):
-        if not part:
-            continue
-        if isinstance(value, dict):
-            value = value.get(part)
-        else:
-            return None
-    return value
-
-
 def shorten_with_provider(provider: str, long_url: str, alias: str = "", ad_type: int = 1) -> dict:
-    """Create a short URL using a built-in or generic provider adapter.
+    """Create a short URL using the documented ShrtFly or ShrinkMe API.
 
-    Built-ins: ShrtFly and ShrinkMe.
-    Generic providers: configure these Render variables, replacing PROVIDER
-    with the uppercase provider name used in the admin input:
-      SHORTLINK_PROVIDER_API_URL
-      SHORTLINK_PROVIDER_API_KEY
-      SHORTLINK_PROVIDER_API_KEY_PARAM   (default: api)
-      SHORTLINK_PROVIDER_URL_PARAM       (default: url)
-      SHORTLINK_PROVIDER_FORMAT_PARAM    (default: format)
-      SHORTLINK_PROVIDER_ALIAS_PARAM     (default: alias)
-      SHORTLINK_PROVIDER_RESPONSE_PATH   (default: result.shorten_url)
-
-    This adapter only creates the URL. It never assumes completion or awards
-    points; verified reward credit requires a provider's compliant S2S callback.
+    This only creates/returns the short URL. Neither provider's documented
+    API supplies a completion callback, so this function never credits a user.
     """
     provider = str(provider or "").strip().lower()
     long_url = str(long_url or "").strip()
     alias = str(alias or "").strip()
     if not long_url:
         return {"ok": False, "error": "missing_url"}
-    if provider in {"", "manual"}:
-        return {"ok": True, "provider": "manual", "short_url": long_url}
 
     if provider == "shrtfly":
         token = _env("SHRTFLY_API_TOKEN")
@@ -421,8 +409,19 @@ def shorten_with_provider(provider: str, long_url: str, alias: str = "", ad_type
         params = {"api": token, "type": int(ad_type or 1), "url": long_url, "format": "json"}
         if alias:
             params["alias"] = alias
-        response_path = "result.shorten_url"
-    elif provider == "shrinkme":
+        try:
+            payload = _json_request(endpoint, params=params)
+            if isinstance(payload, dict) and payload.get("status") == "success":
+                result = payload.get("result") or {}
+                short = result.get("shorten_url")
+                if short:
+                    return {"ok": True, "provider": provider, "short_url": short, "raw": payload}
+            return {"ok": False, "provider": provider, "error": str((payload or {}).get("result", "API error")) if isinstance(payload, dict) else "API error", "raw": payload}
+        except Exception as exc:
+            logger.exception("ShrtFly API failed")
+            return {"ok": False, "provider": provider, "error": str(exc)}
+
+    if provider == "shrinkme":
         token = _env("SHRINKME_API_KEY")
         endpoint = _env("SHRINKME_API_URL", "https://shrinkme.io/api")
         if not token:
@@ -430,36 +429,19 @@ def shorten_with_provider(provider: str, long_url: str, alias: str = "", ad_type
         params = {"api": token, "url": long_url, "format": "json"}
         if alias:
             params["alias"] = alias
-        response_path = "shortenedUrl"
-    else:
-        prefix = f"SHORTLINK_{provider.upper()}_"
-        endpoint = _env(prefix + "API_URL")
-        token = _env(prefix + "API_KEY")
-        if not endpoint:
-            return {"ok": False, "provider": provider, "error": f"missing_{prefix.lower()}api_url"}
-        key_param = _env(prefix + "API_KEY_PARAM", "api")
-        url_param = _env(prefix + "URL_PARAM", "url")
-        fmt_param = _env(prefix + "FORMAT_PARAM", "format")
-        alias_param = _env(prefix + "ALIAS_PARAM", "alias")
-        response_path = _env(prefix + "RESPONSE_PATH", "result.shorten_url")
-        params = {url_param: long_url}
-        if token:
-            params[key_param] = token
-        if fmt_param:
-            params[fmt_param] = "json"
-        if alias and alias_param:
-            params[alias_param] = alias
+        try:
+            payload = _json_request(endpoint, params=params)
+            if isinstance(payload, dict) and payload.get("status") == "success":
+                short = payload.get("shortenedUrl")
+                if short:
+                    return {"ok": True, "provider": provider, "short_url": short, "raw": payload}
+            message = payload.get("message", "API error") if isinstance(payload, dict) else "API error"
+            return {"ok": False, "provider": provider, "error": str(message), "raw": payload}
+        except Exception as exc:
+            logger.exception("ShrinkMe API failed")
+            return {"ok": False, "provider": provider, "error": str(exc)}
 
-    try:
-        payload = _json_request(endpoint, params=params)
-        short = _json_path(payload, response_path)
-        if short:
-            return {"ok": True, "provider": provider, "short_url": str(short), "raw": payload}
-        message = _first(payload, ("message", "error", "result"), "API error") if isinstance(payload, dict) else "API error"
-        return {"ok": False, "provider": provider, "error": str(message), "raw": payload}
-    except Exception as exc:
-        logger.exception("Shortlink provider API failed | provider=%s", provider)
-        return {"ok": False, "provider": provider, "error": str(exc)}
+    return {"ok": False, "error": "unsupported_provider"}
 
 def provider_status():
     return {
