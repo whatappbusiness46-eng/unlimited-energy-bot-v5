@@ -2706,6 +2706,40 @@ async def admin_text_handler(
         )
         return True
 
+    if action == "edit_cpa_offer_name":
+        oid = str(context.user_data.get("cpa_offer_id", "")).strip()
+        name = text.strip()
+        if not oid or not name:
+            await update.message.reply_text("❌ Offer name cannot be empty.", reply_markup=admin_back())
+            return True
+        db["provider_offers"].update_one(
+            {"provider": "cpagrip", "offer_id": oid},
+            {"$set": {"custom_title": name}}
+        )
+        context.user_data.clear()
+        await update.message.reply_text("✅ Offer name updated.", reply_markup=admin_back())
+        return True
+
+    if action == "edit_cpa_offer_reward":
+        oid = str(context.user_data.get("cpa_offer_id", "")).strip()
+        try:
+            reward = int(text.strip())
+            if reward < 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ Send a whole-number points value (0 or higher).", reply_markup=admin_back())
+            return True
+        if not oid:
+            await update.message.reply_text("❌ Offer not found.", reply_markup=admin_back())
+            return True
+        db["provider_offers"].update_one(
+            {"provider": "cpagrip", "offer_id": oid},
+            {"$set": {"custom_reward_points": reward}}
+        )
+        context.user_data.clear()
+        await update.message.reply_text(f"✅ Member reward set to {reward} points.", reply_markup=admin_back())
+        return True
+
     if action == "add_shortlink":
         parts = [part.strip() for part in (update.message.text or "").split("|")]
         if len(parts) not in (5, 6):
@@ -3157,6 +3191,12 @@ async def admin_callback(
     if data.startswith("admin_cpa_toggle_"):
         await admin_cpagrip_toggle(update, context)
         return
+    if data.startswith("admin_cpa_name_"):
+        await admin_cpagrip_edit_name(update, context)
+        return
+    if data.startswith("admin_cpa_reward_"):
+        await admin_cpagrip_edit_reward(update, context)
+        return
 
     if data.startswith("admin_cpa_delete_"):
         await admin_cpagrip_delete(update, context)
@@ -3292,28 +3332,48 @@ async def admin_cpagrip_offers(update, context):
         if not oid:
             continue
         state = "🔴" if oid in disabled else "🟢"
-        title = str(item.get("title", oid))[:25]
+        title = str(item.get("custom_title") or item.get("title", oid))[:22]
+        reward = int(item.get("custom_reward_points") or 0)
         buttons.append([
-            InlineKeyboardButton(
-                f"{state} {title}",
-                callback_data=f"admin_cpa_toggle_{oid}"[:64],
-            ),
-            InlineKeyboardButton(
-                "🗑",
-                callback_data=f"admin_cpa_delete_{oid}"[:64],
-            ),
+            InlineKeyboardButton(f"{state} {title}", callback_data=f"admin_cpa_toggle_{oid}"[:64]),
+            InlineKeyboardButton("✏️ Name", callback_data=f"admin_cpa_name_{oid}"[:64]),
+            InlineKeyboardButton("💰 Points", callback_data=f"admin_cpa_reward_{oid}"[:64]),
+            InlineKeyboardButton("🗑", callback_data=f"admin_cpa_delete_{oid}"[:64]),
         ])
     if not buttons:
         buttons.append([InlineKeyboardButton("🔄 Refresh from CPAGrip", callback_data="admin_cpagrip_refresh")])
     buttons.append([InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")])
     await query.edit_message_text(
-        "🎁 **CPAGrip Offer Management**\n\n"
+        "🎁 **Special Offer Management**\n\n"
+        "✏️ Name and 💰 Points can be customized per offer.\n"
         "🟢 = visible to users\n"
         "🔴 = hidden by admin\n\n"
         "Delete removes the cached offer. A later provider sync may add it again unless the provider no longer supplies it.",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown",
     )
+
+
+async def admin_cpagrip_edit_name(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id):
+        return
+    oid = q.data[len("admin_cpa_name_"):]
+    context.user_data["admin_action"] = "edit_cpa_offer_name"
+    context.user_data["cpa_offer_id"] = oid
+    await q.answer()
+    await q.edit_message_text("✏️ Send the new offer name:", reply_markup=admin_back())
+
+
+async def admin_cpagrip_edit_reward(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id):
+        return
+    oid = q.data[len("admin_cpa_reward_"):]
+    context.user_data["admin_action"] = "edit_cpa_offer_reward"
+    context.user_data["cpa_offer_id"] = oid
+    await q.answer()
+    await q.edit_message_text("💰 Send the new member reward points (any positive number):", reply_markup=admin_back())
 
 
 async def admin_cpagrip_refresh(update, context):

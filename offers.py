@@ -98,9 +98,8 @@ def offers_menu(user_id: int):
     for item in live[:5]:
         provider = str(item.get("provider", "provider"))
         offer_id = str(item.get("offer_id", ""))
-        title = str(item.get("title", "Offer"))
-        payout = item.get("provider_reward", 0)
-        reward = _reward_points(payout)
+        title = str(item.get("custom_title") or item.get("title") or "Special Offer")
+        reward = int(item.get("custom_reward_points") if item.get("custom_reward_points") is not None else _reward_points(item.get("provider_reward", 0)))
         label = f"🎁 {title[:28]} • +{reward} pts"
         callback = f"provider_offer_{_provider_offer_key(provider, offer_id)}"
         if len(callback) <= 64:
@@ -148,8 +147,8 @@ async def offers_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         for item in live[:5]:
             lines.append(
-                f"• {item.get('title', 'Offer')} — "
-                f"Earn +{_reward_points(item.get('provider_reward', 0))} Points"
+                f"• {item.get('custom_title') or item.get('title', 'Special Offer')} — "
+                f"Earn +{int(item.get('custom_reward_points') or _reward_points(item.get('provider_reward', 0)))} Points"
             )
         text = "\n".join(lines)
 
