@@ -17,6 +17,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 
 from config import (
+    FORCE_JOIN_ENABLED,
     ADMIN_USERNAME,
     GROUPS,
     VIP_PRICE,
@@ -885,7 +886,7 @@ async def show_help(
         "📜 Activity — View recent activity\n\n"
 
         "🆘 Need help?\n"
-        "Contact the support grupe: @UnlimitedEnergySupport",
+        "Contact the Admin: @mdrifatowner05",
 
         reply_markup=home_keyboard(),
 
@@ -908,6 +909,10 @@ async def verify_join_callback(
         return
 
     user_id = query.from_user.id
+
+    if not FORCE_JOIN_ENABLED:
+        await query.answer("✅ Group verification is not required.")
+        return
 
     user = get_user(user_id)
 

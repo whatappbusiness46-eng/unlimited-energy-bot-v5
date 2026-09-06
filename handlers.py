@@ -26,6 +26,7 @@ from database import (
 )
 
 from config import (
+    FORCE_JOIN_ENABLED,
     GROUPS,
     DAILY_BONUS,
     DAILY_XP,
@@ -164,6 +165,9 @@ def main_menu():
 
 def force_join_menu():
 
+    if not FORCE_JOIN_ENABLED:
+        return InlineKeyboardMarkup([])
+
     keyboard = []
 
     for index, group in enumerate(
@@ -203,6 +207,9 @@ async def check_force_join(
     user_id,
     context,
 ):
+
+    if not FORCE_JOIN_ENABLED:
+        return []
 
     not_joined = []
 

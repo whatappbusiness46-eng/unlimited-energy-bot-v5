@@ -896,7 +896,7 @@ async def admin_shortlinks(update, context):
         "🔗 **SHORTLINK MANAGEMENT**\n\n"
         f"Configured: {len(items)}\n\n"
         "Add format: `id|name|url|reward|cooldown|provider`\n"
-        "Example: `sl1|Example|https://example.com/go|100|86400|shrtfly`",
+        "Example: `sl1|Example|https://example.com/go|0|86400|shrtfly`",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown",
     )
@@ -912,8 +912,8 @@ async def admin_add_shortlink(update, context):
     context.user_data["admin_action"] = "add_shortlink"
     await query.edit_message_text(
         "🔗 **ADD SHORTLINK**\n\n"
-        "Send: `id|name|url|reward|cooldown|provider`\n\n"
-        "Example: `sl1|Example|https://example.com/go|100|86400|shrtfly`",
+        "Send: `id|name|url|reward|cooldown`\n\n"
+        "Example: `sl1|Example|https://example.com/go|0|86400|shrtfly`",
         reply_markup=admin_back(),
         parse_mode="Markdown",
     )
@@ -2342,30 +2342,6 @@ async def admin_text_handler(
         return True
 
     # ==================================================
-    # CPA OFFER MEMBER REWARD
-    # ==================================================
-    if action == "set_cpa_reward":
-        try:
-            points = int(text)
-            if points < 0:
-                raise ValueError
-        except ValueError:
-            await update.message.reply_text("❌ Send a whole number of points (0 or more).")
-            return True
-        oid = str(context.user_data.get("cpa_offer_id") or "").strip()
-        if not oid:
-            context.user_data.clear()
-            await update.message.reply_text("❌ Offer session expired.", reply_markup=admin_back())
-            return True
-        db["provider_offers"].update_one(
-            {"provider": "cpagrip", "offer_id": oid},
-            {"$set": {"member_reward_points": points}},
-        )
-        context.user_data.clear()
-        await update.message.reply_text(f"✅ Member reward set to {points} points.", reply_markup=admin_back())
-        return True
-
-    # ==================================================
     # WITHDRAWAL REJECTION REASON
     # ==================================================
 
@@ -2754,7 +2730,7 @@ async def admin_text_handler(
             await update.message.reply_text("❌ Invalid shortlink values.", reply_markup=admin_back())
             return True
         final_url = url
-        if provider in {"shrtfly", "shrinkme"}:
+        if provider not in {"manual", ""}:
             result = shorten_with_provider(provider, url, alias=sid, ad_type=1)
             if not result.get("ok"):
                 await update.message.reply_text(
@@ -2763,13 +2739,16 @@ async def admin_text_handler(
                 )
                 return True
             final_url = result["short_url"]
+            # Link creation is separate from completion verification. Never
+            # award points unless a compliant verified callback is available.
+            reward = 0
         if not register_shortlink(sid, name, final_url, reward=reward, cooldown=cooldown):
             await update.message.reply_text("❌ Could not save shortlink.", reply_markup=admin_back())
             return True
         context.user_data.clear()
         await update.message.reply_text(
             f"✅ Shortlink `{sid}` saved ({provider}).\n\n"
-            + ("🔗 Provider API generated the short URL. Reward remains 0 because the documented API does not provide verified completion callbacks." if provider in {"shrtfly", "shrinkme"} else "🔗 Manual/provider URL saved."),
+            + ("🔗 Provider API generated the short URL. Reward remains 0 until a compliant verified completion callback is configured." if provider not in {"manual", ""} else "🔗 Manual URL saved."),
             reply_markup=admin_back(),
             parse_mode="Markdown",
         )
@@ -3178,10 +3157,6 @@ async def admin_callback(
         await admin_cpagrip_toggle(update, context)
         return
 
-    if data.startswith("admin_cpa_reward_"):
-        await admin_cpagrip_reward(update, context)
-        return
-
     if data.startswith("admin_cpa_delete_"):
         await admin_cpagrip_delete(update, context)
         return
@@ -3323,10 +3298,6 @@ async def admin_cpagrip_offers(update, context):
                 callback_data=f"admin_cpa_toggle_{oid}"[:64],
             ),
             InlineKeyboardButton(
-                "✏️ Points",
-                callback_data=f"admin_cpa_reward_{oid}"[:64],
-            ),
-            InlineKeyboardButton(
                 "🗑",
                 callback_data=f"admin_cpa_delete_{oid}"[:64],
             ),
@@ -3343,23 +3314,6 @@ async def admin_cpagrip_offers(update, context):
         parse_mode="Markdown",
     )
 
-
-
-async def admin_cpagrip_reward(update, context):
-    query = update.callback_query
-    if not query or not admin_only(query.from_user.id):
-        if query: await query.answer("🚫 Admin only.", show_alert=True)
-        return
-    oid = str(query.data).replace("admin_cpa_reward_", "", 1)
-    if not oid:
-        await query.answer("Invalid offer.", show_alert=True); return
-    context.user_data["admin_action"] = "set_cpa_reward"
-    context.user_data["cpa_offer_id"] = oid
-    await query.answer()
-    await query.edit_message_text(
-        f"🎁 Offer: `{oid}`\n\nSend the member reward in points (whole number):",
-        reply_markup=admin_back(), parse_mode="Markdown"
-    )
 
 async def admin_cpagrip_refresh(update, context):
     query = update.callback_query
