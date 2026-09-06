@@ -40,7 +40,7 @@ def _env(name: str, default: str = "") -> str:
 
 def _offer_limit() -> int:
     try:
-        return max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "0")))
+        return max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "{}")))
     except (TypeError, ValueError):
         return {}
 
