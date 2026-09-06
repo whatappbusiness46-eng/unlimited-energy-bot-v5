@@ -17,7 +17,7 @@ from database import db, add_balance, add_activity, get_user, record_transaction
 
 logger = logging.getLogger(__name__)
 
-CPAGRIP_OFFER_LIMIT = max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "0")))
+CPAGRIP_OFFER_LIMIT = max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "{}")))
 
 provider_offers = db["provider_offers"]
 provider_events = db["provider_events"]
@@ -42,7 +42,7 @@ def _offer_limit() -> int:
     try:
         return max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "0")))
     except (TypeError, ValueError):
-        return 0
+        return {}
 
 
 def _enabled(provider: str) -> bool:
