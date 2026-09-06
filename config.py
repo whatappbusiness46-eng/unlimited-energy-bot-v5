@@ -69,7 +69,7 @@ except ValueError:
 # FORCE JOIN
 # ============================================================
 
-FORCE_JOIN_ENABLED = true  # Disabled by default: bot works without mandatory group joining.
+FORCE_JOIN_ENABLED = os.getenv("FORCE_JOIN_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 GROUPS = [
