@@ -2,7 +2,7 @@
 
 ## Already included
 - Admin-managed Tasks: add/update, enable/disable, delete.
-- Task format: `id|title|description|url|reward|cooldown|xp|energy`.
+- Task format: `id|title|description|url|reward|cooldown|xp|energy|task_type|audience|verification`. Audience: `normal`, `vip`, or `both`. Verification: `telegram_join` (public t.me links) or `manual` (not auto-rewarded). Tasks are permanently one-time per user; cooldown does not reset a completed task.
 - Referral qualification: signup attribution is pending; the first qualifying task releases the referral reward once.
 - Referral anti-duplicate markers and milestone markers.
 - Default referral milestones: 5=100, 10=250, 25=700, 50=1500, 100=3500 Points.

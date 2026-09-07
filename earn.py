@@ -377,218 +377,24 @@ async def daily_bonus(
 # TASKS
 # ============================================================
 
-async def tasks(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    query = update.callback_query
-
-    if not query:
-        return
-
-    await query.answer()
-
-    user_id = query.from_user.id
-
-    user = get_user(
-        user_id,
-        create=False,
-    )
-
-    if not user:
-        await query.edit_message_text(
-            "⚠️ Account not found.",
-            reply_markup=back_menu(),
-        )
-        return
-
-    if user.get("banned", False):
-        await query.edit_message_text(
-            "🚫 Your account has been banned."
-        )
-        return
-
-    settings = get_bot_settings() or {}
-    task_reward = max(0, int(settings.get("task_reward", 10) or 10))
-    daily_task_limit = max(1, int(settings.get("daily_task_limit", MAX_DAILY_TASKS) or MAX_DAILY_TASKS))
-    completed_today = user.get(
-        "daily_task_count",
-        0,
-    )
-
-    await query.edit_message_text(
-        "📋 **TASK CENTER**\n\n"
-        "🧪 **Test Task**\n"
-        f"💰 Reward: {task_reward} Points\n"
-        "⭐ XP: 5\n"
-        "⚡ Energy: 1\n\n"
-        f"📊 Daily Tasks: "
-        f"{completed_today}/{daily_task_limit}\n\n"
-        "Complete the test task below.",
-        reply_markup=InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "✅ Complete Task",
-                        callback_data="claim_test_task",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "💰 Earn",
-                        callback_data="earn",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "🏠 Home",
-                        callback_data="home",
-                    )
-                ],
-            ]
-        ),
-        parse_mode="Markdown",
-    )
+async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Backward-compatible entry point for the MongoDB Task Center."""
+    from tasks import tasks_page
+    await tasks_page(update, context)
 
 
 # ============================================================
 # TEST TASK
 # ============================================================
 
-async def claim_test_task(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def claim_test_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-
-    if not query:
-        return
-
-    await query.answer()
-
-    user_id = query.from_user.id
-
-    user = get_user(
-        user_id,
-        create=False,
-    )
-
-    if not user:
+    if query:
+        await query.answer("This legacy task is no longer available.", show_alert=True)
         await query.edit_message_text(
-            "⚠️ Account not found.",
-            reply_markup=back_menu(),
+            "📋 **TASK CENTER**\n\nThe old test task has been retired. Please use the current verified Task Center.",
+            reply_markup=back_menu(), parse_mode="Markdown"
         )
-        return
-
-    if user.get("banned", False):
-        await query.edit_message_text(
-            "🚫 Your account has been banned."
-        )
-        return
-
-    settings = get_bot_settings() or {}
-    task_reward = max(0, int(settings.get("task_reward", 10) or 10))
-    daily_task_limit = max(1, int(settings.get("daily_task_limit", MAX_DAILY_TASKS) or MAX_DAILY_TASKS))
-
-    daily_count = user.get(
-        "daily_task_count",
-        0,
-    )
-
-    last_task_reset = user.get(
-        "last_task_reset",
-        0,
-    )
-
-    now = int(time.time())
-
-    if last_task_reset == 0:
-        daily_count = 0
-        last_task_reset = now
-
-    elif now - last_task_reset >= 86400:
-        daily_count = 0
-        last_task_reset = now
-
-    if daily_count >= daily_task_limit:
-        await query.edit_message_text(
-            "🚫 **DAILY TASK LIMIT REACHED**\n\n"
-            f"You have completed "
-            f"{daily_task_limit} tasks today.\n\n"
-            "Please come back later.",
-            reply_markup=back_menu(),
-            parse_mode="Markdown",
-        )
-        return
-
-    if not use_energy(
-        user_id,
-        1,
-    ):
-        await query.edit_message_text(
-            "⚡ **NOT ENOUGH ENERGY**\n\n"
-            "You need at least 1 Energy "
-            "to complete this task.",
-            reply_markup=back_menu(),
-            parse_mode="Markdown",
-        )
-        return
-
-    reward = task_reward
-
-    add_balance(
-        user_id,
-        reward,
-    )
-
-    xp_result = add_xp(
-        user_id,
-        5,
-    )
-
-    daily_count += 1
-
-    update_user(
-        user_id,
-        {
-            "task_completed": (
-                user.get(
-                    "task_completed",
-                    0,
-                )
-                + 1
-            ),
-            "daily_task_count": daily_count,
-            "last_task_reset": last_task_reset,
-        },
-    )
-
-    add_activity(
-        user_id,
-        "📋 Test Task Completed",
-        reward,
-    )
-
-    level_text = ""
-
-    if xp_result.get("level_up"):
-        level_text = (
-            "\n🎉 **LEVEL UP!**\n"
-            f"🏆 New Level: "
-            f"{xp_result.get('level', 1)}\n"
-        )
-
-    await query.edit_message_text(
-        "✅ **TASK COMPLETED!**\n\n"
-        f"💰 Reward: +{reward} Points\n"
-        "⚡ Energy Used: 1\n"
-        "⭐ XP: +5\n"
-        f"📊 Daily Tasks: "
-        f"{daily_count}/{daily_task_limit}\n"
-        f"{level_text}",
-        reply_markup=back_menu(),
-        parse_mode="Markdown",
-    )
 
 
 # ============================================================

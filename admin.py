@@ -1575,7 +1575,7 @@ async def admin_tasks(update, context):
         tid = str(t.get("id"))
         title = str(t.get('title', tid))[:40]
         action = "🔴 Disable" if t.get("enabled", True) else "🟢 Enable"
-        buttons.append([InlineKeyboardButton(f"{status} {title} | +{t.get('reward',0)}", callback_data=f"admin_task_toggle_{tid}")])
+        buttons.append([InlineKeyboardButton(f"{status} {title} | +{t.get('reward',0)} | {str(t.get("audience","normal")).upper()}", callback_data=f"admin_task_toggle_{tid}")])
         buttons.append([
             InlineKeyboardButton(action, callback_data=f"admin_task_toggle_{tid}"),
             InlineKeyboardButton("🗑 Delete", callback_data=f"admin_task_delete_{tid}"),
@@ -1584,8 +1584,8 @@ async def admin_tasks(update, context):
     await query.edit_message_text(
         "🎯 **TASK MANAGEMENT**\n\n"
         f"Configured: {len(items)}\n\n"
-        "Add format:\n`id|title|description|url|reward|cooldown|xp|energy`\n\n"
-        "Example:\n`task1|Join Channel|Join our channel|https://t.me/example|50|86400|5|1`\n\n"
+        "Add format:\n`id|title|description|url|reward|cooldown|xp|energy|task_type|audience|verification`\n\n"
+        "Example:\n`task1|Join Channel|Join our channel|https://t.me/example|50|86400|5|1|telegram|normal|telegram_join`\n\n"
         "🟢 visible/active · 🔴 disabled",
         reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
@@ -1596,8 +1596,8 @@ async def admin_add_task(update, context):
         return
     await query.answer(); context.user_data["admin_action"]="add_task"
     await query.edit_message_text(
-        "🎯 **ADD TASK**\n\nSend one line:\n`id|title|description|url|reward|cooldown|xp|energy`\n\n"
-        "Use `-` for no URL/description. Example:\n`task1|Join Channel|Join our channel|https://t.me/example|50|86400|5|1`",
+        "🎯 **ADD TASK**\n\nSend one line:\n`id|title|description|url|reward|cooldown|xp|energy|task_type|audience|verification`\n\n"
+        "Use `-` for no URL/description. Example:\n`task1|Join Channel|Join our channel|https://t.me/example|50|86400|5|1|telegram|normal|telegram_join`",
         reply_markup=admin_back(), parse_mode="Markdown")
 
 async def admin_task_toggle(update, context):
@@ -2668,15 +2668,16 @@ async def admin_text_handler(
         context.user_data.clear(); await update.message.reply_text("✅ Milestone deleted." if ok else "❌ Milestone not found.", reply_markup=admin_back()); return True
 
     if action == "add_task":
-        parts = [x.strip() for x in text.split("|", 7)]
-        if len(parts) != 8:
+        parts = [x.strip() for x in text.split("|")]
+        if len(parts) not in (8, 11):
             await update.message.reply_text(
-                "❌ Format: id|title|description|url|reward|cooldown|xp|energy",
+                "❌ Format: id|title|description|url|reward|cooldown|xp|energy|task_type|audience|verification",
                 reply_markup=admin_back(),
             )
             return True
 
-        tid, title, desc, url, reward_text, cooldown_text, xp_text, energy_text = parts
+        tid, title, desc, url, reward_text, cooldown_text, xp_text, energy_text = parts[:8]
+        task_type, audience, verification = (parts[8:11] if len(parts) == 11 else ("telegram", "normal", "telegram_join"))
         if desc == "-":
             desc = ""
         if url == "-":
@@ -2693,7 +2694,8 @@ async def admin_text_handler(
                 raise ValueError
 
             ok = register_task(
-                tid, title, desc, reward, url, cooldown, True, xp, energy
+                tid, title, desc, reward, url, cooldown, True, xp, energy,
+                task_type=task_type, audience=audience, verification_method=verification
             )
         except (TypeError, ValueError):
             ok = False
