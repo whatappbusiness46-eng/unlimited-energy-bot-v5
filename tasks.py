@@ -36,22 +36,44 @@ def _safe_int(v, d=0):
         return d
 
 
+def _ensure_named_index(collection, keys, *, unique=False, name=None):
+    """Create an index without failing when MongoDB already has the same key pattern under another name."""
+    desired = list(keys)
+    indexes = collection.index_information()
+    matching = []
+    for existing_name, info in indexes.items():
+        existing_keys = info.get("key")
+        if existing_keys is not None and list(existing_keys) == desired:
+            matching.append((existing_name, info))
+
+    # A matching index with the required uniqueness is already sufficient.
+    for existing_name, info in matching:
+        if bool(info.get("unique", False)) == bool(unique):
+            return existing_name
+
+    # Same key pattern but wrong uniqueness: remove the conflicting index first.
+    for existing_name, _info in matching:
+        if existing_name != "_id_":
+            collection.drop_index(existing_name)
+
+    return collection.create_index(desired, unique=unique, name=name)
+
+
 def ensure_task_indexes():
     try:
-        indexes = tasks_collection.index_information()
-        for name, info in indexes.items():
-            if info.get("key") == [("id", 1)]:
-                if info.get("unique", False):
-                    break
-                if name != "_id_":
-                    tasks_collection.drop_index(name)
-                break
-        else:
-            tasks_collection.create_index([("id", 1)], unique=True, name="task_id_unique")
-        completions_collection.create_index(
-            [("user_id", 1), ("task_id", 1)], unique=True, name="user_task_unique"
+        _ensure_named_index(tasks_collection, [("id", 1)], unique=True, name="task_id_unique")
+        _ensure_named_index(
+            completions_collection,
+            [("user_id", 1), ("task_id", 1)],
+            unique=True,
+            name="user_task_unique",
         )
-        completions_collection.create_index([("user_id", 1), ("status", 1)])
+        _ensure_named_index(
+            completions_collection,
+            [("user_id", 1), ("status", 1)],
+            unique=False,
+            name="user_status_idx",
+        )
         return True
     except Exception:
         logger.exception("task index creation failed")
@@ -208,7 +230,19 @@ def _reserve_completion(user_id, task_id):
         existing = completions_collection.find_one({"user_id": int(user_id), "task_id": str(task_id)})
         if existing and existing.get("status") == "rewarded":
             return False, "already"
-        return True, "pending"
+        # Never let two concurrent requests both proceed from the same pending record.
+        # A stale reservation is recoverable after a short safety window.
+        if existing and existing.get("status") == "pending":
+            age = _now() - _safe_int(existing.get("created_at"), _now())
+            if age < 600:
+                return False, "in_progress"
+            completions_collection.delete_one({"_id": existing.get("_id"), "status": "pending"})
+            try:
+                completions_collection.insert_one(doc)
+                return True, "new"
+            except DuplicateKeyError:
+                return False, "in_progress"
+        return False, "already"
     except Exception:
         logger.exception("task completion reservation failed")
         return False, "error"
@@ -285,7 +319,8 @@ async def complete_task_async(user_id, task_id, bot):
     count, reset = _daily_count(user)
     if count >= daily_limit: return False, "Daily task limit reached."
     reserved, state = _reserve_completion(user_id, task_id)
-    if not reserved: return False, "Task already completed."
+    if not reserved:
+        return False, "Task already completed." if state == "already" else "Task verification is already in progress. Please try again shortly."
     energy_cost = max(0, _safe_int(task.get("energy"), 1))
     if energy_cost and not use_energy(user_id, energy_cost):
         if state == "new":

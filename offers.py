@@ -7,6 +7,7 @@
 import logging
 import os
 import time
+from html import escape as html_escape
 from typing import Any, Dict, Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -147,7 +148,7 @@ async def offers_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         for item in live[:5]:
             lines.append(
-                f"• {item.get('custom_title') or item.get('title', 'Special Offer')} — "
+                f"• {html_escape(str(item.get('custom_title') or item.get('title', 'Special Offer')))} — "
                 f"Earn +{int(item.get('custom_reward_points') or _reward_points(item.get('provider_reward', 0)))} Points"
             )
         text = "\n".join(lines)
@@ -155,7 +156,7 @@ async def offers_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.reply_text(
         text,
         reply_markup=offers_menu(user.id),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -200,13 +201,18 @@ async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("⚠️ Offer link unavailable.")
         return
 
+    title = html_escape(str(offer.get("title") or "Offer"))
+    provider_reward = html_escape(str(offer.get("provider_reward", 0)))
+    description = html_escape(str(offer.get("description") or ""))
+    reward_points = _reward_points(offer.get("provider_reward", 0))
+
     await query.edit_message_text(
-        "🎁 **OFFER DETAILS**\n\n"
-        f"📌 {offer.get('title', 'Offer')}\n"
-        
-        f"💵 Provider payout: ${offer.get('provider_reward', 0)}\n"
-        f"💰 Your reward: +{_reward_points(offer.get('provider_reward', 0))} Points\n\n"
-        f"{offer.get('description', '')}\n\n"
+        "🎁 <b>OFFER DETAILS</b>\n\n"
+        f"📌 {title}\n"
+        f"💵 Provider payout: ${provider_reward}\n"
+        f"💰 Your reward: +{reward_points} Points\n\n"
+        f"{description}\n\n"
+        "Enter your information now to get started.\n\n"
         "Complete the offer according to its instructions. "
         "The bot will credit your points only after a verified "
         "conversion callback from the provider.",
@@ -215,7 +221,7 @@ async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_
             [InlineKeyboardButton("⬅️ Offers", callback_data="offers")],
             [InlineKeyboardButton("🏠 Home", callback_data="home")],
         ]),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
