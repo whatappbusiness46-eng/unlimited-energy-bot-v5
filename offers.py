@@ -7,6 +7,7 @@
 import logging
 import os
 import time
+from config import CPAGRIP_DEFAULT_USER_REWARD_POINTS, CPAGRIP_OFFER_LIMIT
 from html import escape as html_escape
 from typing import Any, Dict, Optional
 
@@ -96,7 +97,7 @@ def offers_menu(user_id: int):
     keyboard = []
     live = _live_offers(user_id)
 
-    for item in live[:5]:
+    for item in live[:CPAGRIP_OFFER_LIMIT]:
         provider = str(item.get("provider", "provider"))
         offer_id = str(item.get("offer_id", ""))
         title = str(item.get("custom_title") or item.get("title") or "Special Offer")
@@ -146,7 +147,7 @@ async def offers_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "only after the provider confirms the conversion.",
             "",
         ]
-        for item in live[:5]:
+        for item in live[:CPAGRIP_OFFER_LIMIT]:
             lines.append(
                 f"• {html_escape(str(item.get('custom_title') or item.get('title', 'Special Offer')))} — "
                 f"Earn +{int(item.get('custom_reward_points') or _reward_points(item.get('provider_reward', 0)))} Points"
@@ -201,21 +202,27 @@ async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("⚠️ Offer link unavailable.")
         return
 
-    title = html_escape(str(offer.get("title") or "Offer"))
-    provider_reward = html_escape(str(offer.get("provider_reward", 0)))
-    description = html_escape(str(offer.get("description") or ""))
-    reward_points = _reward_points(offer.get("provider_reward", 0))
-
-    await query.edit_message_text(
-        "🎁 <b>OFFER DETAILS</b>\n\n"
-        f"📌 {title}\n"
-        f"💵 Provider payout: ${provider_reward}\n"
-        f"💰 Your reward: +{reward_points} Points\n\n"
-        f"{description}\n\n"
-        "Enter your information now to get started.\n\n"
+    title = html_escape(str(offer.get("custom_title") or offer.get("title") or "Offer"))
+    description = html_escape(str(offer.get("description") or "")).strip()
+    reward_points = int(offer.get("custom_reward_points") or _reward_points(offer.get("provider_reward", 0)) or 200)
+    if reward_points <= 0:
+        reward_points = 200
+    # Provider payout is intentionally hidden from members. Member-facing reward is fixed/configured.
+    detail_lines = [
+        "🎁 <b>OFFER DETAILS</b>",
+        "",
+        f"📌 {title}",
+        f"💰 Your reward: +{reward_points} Points",
+    ]
+    if description:
+        detail_lines += ["", description]
+    detail_lines += [
+        "",
         "Complete the offer according to its instructions. "
-        "The bot will credit your points only after a verified "
-        "conversion callback from the provider.",
+        "The bot will credit your points only after a verified conversion callback from the provider.",
+    ]
+    await query.edit_message_text(
+        "\n".join(detail_lines),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🚀 Start Offer", url=url)],
             [InlineKeyboardButton("⬅️ Offers", callback_data="offers")],

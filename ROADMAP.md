@@ -1,29 +1,18 @@
-# Unlimited Energy Bot — Future Income Pack
+# Unlimited Energy — Future Income Roadmap
 
-This pack is kept separate from the current production bot. Do not merge these ideas blindly.
+These are future additions only; existing earning, payment, withdrawal, referral, VIP and task behavior should remain unchanged unless a future item explicitly requires a separate opt-in setting.
 
-## Phase 1 — Revenue expansion
-- Add a second CPA/offer provider after verifying that incentivized traffic is allowed.
-- Add Survey provider(s) with verified server-to-server completion.
-- Add App & Games provider(s) with verified conversion callbacks.
-- Add offer ranking/filtering by GEO, device, category, payout and conversion quality.
+## Priority order
+1. More compliant CPA/offer providers with server-side conversion callbacks.
+2. Provider-level offer filtering and member reward configuration.
+3. Sponsored Telegram tasks with admin approval and proof review.
+4. Direct advertiser campaign panel (budget, reward, start/end date, cap).
+5. Premium/VIP upsell experiments with clear pricing and no guaranteed-income claims.
+6. Analytics: conversion rate, EPC, task completion rate, withdrawal cost and net margin.
+7. Anti-fraud: rate limits, duplicate event protection, suspicious-account review and provider postback validation.
 
-## Phase 2 — Own monetization
-- Sponsored Tasks: advertisers pay to publish real Telegram tasks.
-- Featured Offer / Sponsored Banner placements.
-- VIP task marketplace and VIP-only higher-value offers.
-- Referral milestones with anti-abuse controls.
-
-## Phase 3 — Advertiser system
-- Advertiser dashboard.
-- Campaign budget, daily cap, task approval, campaign pause/resume.
-- Conversion/revenue analytics and reconciliation.
-
-## Phase 4 — Optimization
-- Fraud/anomaly flags.
-- Provider reconciliation.
-- User segmentation and offer targeting.
-- Revenue per active user / retention analytics.
-
-## Important rule
-Never add a provider just because it has an API. Verify its current terms first, especially rules around incentivized traffic, PTC/faucet traffic, click incentives, and traffic sources.
+## Guardrails
+- Never fake members, conversions, earnings or payment proofs.
+- Never show provider payout to members when a separate member reward is configured.
+- Never reward unsupported ad-provider clicks when the provider prohibits incentivized traffic.
+- Keep secrets in Render Environment Variables.

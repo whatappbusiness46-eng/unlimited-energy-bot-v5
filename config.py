@@ -83,6 +83,10 @@ GROUPS = [
 # Reward for successfully completing force join.
 GROUP_JOIN_REWARD = 20
 
+# Provider member rewards are independent of provider payout.
+CPAGRIP_DEFAULT_USER_REWARD_POINTS = max(1, int(os.getenv("CPAGRIP_DEFAULT_USER_REWARD_POINTS", "200")))
+CPAGRIP_OFFER_LIMIT = max(1, int(os.getenv("CPAGRIP_OFFER_LIMIT", "5")))
+
 
 # ============================================================
 # WITHDRAW

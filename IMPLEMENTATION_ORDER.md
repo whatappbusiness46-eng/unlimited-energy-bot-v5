@@ -1,11 +1,21 @@
-# Implementation Order Later
+# Future implementation order
 
-1. Finish and production-test current Tasks + Shortlink safety changes.
-2. Add real Normal/VIP tasks using real URLs supplied by admin.
-3. Add a second verified CPA provider only after terms review.
-4. Add Surveys / App & Games with S2S postbacks.
-5. Add Sponsored Tasks.
-6. Add advertiser dashboard.
-7. Add revenue analytics and fraud/reconciliation tooling.
+Build future income features one at a time and test the existing bot after every change.
 
-Do not merge this pack into production until each feature is separately tested.
+### Phase 1 — Revenue reliability
+- Add additional legitimate CPA providers only when their API/postback terms permit the traffic model.
+- Keep provider conversion IDs unique and idempotent.
+- Keep member rewards independent from provider payout.
+
+### Phase 2 — Advertiser marketplace
+- Admin creates campaigns.
+- Campaign has URL, task type, audience, reward, daily cap, total cap, start/end time and approval mode.
+- Members see only member reward and task instructions.
+- Admin sees campaign cost and performance.
+
+### Phase 3 — Analytics
+- Revenue, member rewards, withdrawals, provider conversions and net margin.
+- Daily/weekly/monthly reports.
+
+### Phase 4 — Growth
+- Referral tiers, retention bonuses and VIP perks that are funded by real revenue.

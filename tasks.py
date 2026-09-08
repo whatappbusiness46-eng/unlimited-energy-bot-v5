@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.helpers import escape_markdown
 from telegram.ext import ContextTypes
 from pymongo.errors import DuplicateKeyError
 
@@ -41,6 +42,10 @@ def _safe_int(v, d=0):
         return int(v)
     except (TypeError, ValueError):
         return d
+
+
+def _md(value):
+    return escape_markdown(str(value or ""), version=2)
 
 
 def _ensure_named_index(collection, keys, *, unique=False, name=None):
@@ -91,8 +96,30 @@ ensure_task_indexes()
 
 
 def seed_default_task():
-    # No fake/test task is inserted. Admin creates real tasks.
+    """Create a small set of real task entries once; admins can edit/disable them."""
     ensure_task_indexes()
+    defaults = [
+        ("ue_official_join", "🔥 Join Unlimited Energy Official", "Join our official Telegram channel.", "https://t.me/UnlimitedEnergyOfficial", 10, "telegram_join"),
+        ("ue_tasks_join", "📋 Join Unlimited Energy Tasks", "Join the Unlimited Energy Tasks channel/group.", "https://t.me/UnlimitedEnergyTasks", 10, "telegram_join"),
+        ("ue_rewards_join", "🎁 Join Unlimited Energy Rewards", "Join the Unlimited Energy Rewards channel/group.", "https://t.me/UnlimitedEnergyRewards", 10, "telegram_join"),
+        ("ue_community_join", "👥 Join Unlimited Energy Community", "Join the Unlimited Energy Community.", "https://t.me/UnlimitedEnergyCommunity", 10, "telegram_join"),
+        ("quick_earn_x", "🤖 Start Quick Earn X", "Open Quick Earn X and press Start. Submit it for Admin approval.", "https://t.me/QuickEarn_X_bot?start=7713476833", 10, "manual"),
+    ]
+    for tid, title, desc, url, reward, verification in defaults:
+        tasks_collection.update_one(
+            {"id": tid},
+            {"$setOnInsert": {
+                "id": tid, "title": title, "description": desc, "reward": reward,
+                "url": url, "cooldown": 0, "enabled": True, "xp": 0, "energy": 0,
+                "task_type": "telegram" if verification == "telegram_join" else "visit",
+                "audience": "normal", "verification_method": verification,
+                "created_at": _now(), "updated_at": _now(),
+            }},
+            upsert=True,
+        )
+
+
+seed_default_task()
 
 
 def _normalise_verification(value, url=None):
@@ -266,8 +293,16 @@ def _reserve_completion(user_id, task_id):
         return False, "error"
 
 
+def _manual_review_required(user_id, task):
+    # VIP tasks are always admin-reviewed. Normal tasks can explicitly use
+    # manual verification (for example, an external bot/start task).
+    audience = str(task.get("audience", "normal")).strip().lower()
+    verification = _normalise_verification(task.get("verification_method"), task.get("url"))
+    return audience == "vip" or (audience == "both" and _is_vip(user_id)) or verification == "manual"
+
+
 def _vip_manual_review_required(user_id, task):
-    # VIP task claims are always admin-reviewed. For a BOTH task, only VIP users are reviewed.
+    # Backward-compatible alias used by existing admin/UI code.
     audience = str(task.get("audience", "normal")).strip().lower()
     return audience == "vip" or (audience == "both" and _is_vip(user_id))
 
@@ -285,7 +320,7 @@ def request_vip_task_review(user_id, task_id):
     user = get_user(user_id, create=False); task = get_task(task_id)
     if not user or not task or user.get("banned") or user.get("blacklisted") or not task_visible(user_id, task):
         return False, "Unavailable."
-    if not _vip_manual_review_required(user_id, task):
+    if not _manual_review_required(user_id, task):
         return False, "This task is auto-verified for Normal members."
     if not task_available(user_id, task_id):
         existing = completions_collection.find_one({"user_id": int(user_id), "task_id": str(task_id)})
@@ -357,7 +392,7 @@ def complete_task(user_id, task_id, bot=None):
     if not task_available(user_id, task_id):
         return False, "Task already completed."
 
-    if _vip_manual_review_required(user_id, task):
+    if _manual_review_required(user_id, task):
         return request_vip_task_review(user_id, task_id)
     verification = _normalise_verification(task.get("verification_method"), task.get("url"))
     if verification == "telegram_join":
@@ -371,8 +406,6 @@ def complete_task(user_id, task_id, bot=None):
             return False, "Verification is temporarily unavailable."
         if not verified:
             return False, "Please complete the Telegram join task first."
-    elif TASK_VERIFICATION_ENABLED and verification == "manual":
-        return False, "This task requires admin/provider verification and cannot be auto-verified."
 
     settings = db["bot_settings"].find_one({"_id": "main"}) or {}
     daily_limit = max(1, _safe_int(settings.get("daily_task_limit"), 20))
@@ -413,13 +446,11 @@ async def complete_task_async(user_id, task_id, bot):
         return False, "Unavailable."
     if not task_available(user_id, task_id):
         return False, "Task already completed."
-    if _vip_manual_review_required(user_id, task):
+    if _manual_review_required(user_id, task):
         return request_vip_task_review(user_id, task_id)
     verification = _normalise_verification(task.get("verification_method"), task.get("url"))
     if verification == "telegram_join" and not await _verify_telegram_join(bot, user_id, task.get("url")):
         return False, "Please complete the Telegram join task first."
-    if TASK_VERIFICATION_ENABLED and verification == "manual":
-        return False, "This task requires admin/provider verification and cannot be auto-verified."
     settings = db["bot_settings"].find_one({"_id": "main"}) or {}
     daily_limit = max(1, _safe_int(settings.get("daily_task_limit"), 20))
     count, reset = _daily_count(user)
@@ -496,14 +527,14 @@ async def task_callback(update, context):
     buttons=[]
     if task.get("url"): buttons.append([InlineKeyboardButton("🚀 Open Task", url=task["url"])])
     verification = _normalise_verification(task.get("verification_method"), task.get("url"))
-    if _vip_manual_review_required(q.from_user.id, task):
+    if _manual_review_required(q.from_user.id, task):
         buttons.append([InlineKeyboardButton("📨 Submit for Admin Approval", callback_data=f"task_complete_{tid}")])
     elif verification in {"telegram_join", "click_once"}:
         label = "🎁 Claim 10 Points" if verification == "click_once" else "✅ Verify Task"
         buttons.append([InlineKeyboardButton(label, callback_data=f"task_complete_{tid}")])
     buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
     audience = str(task.get("audience", "normal")).upper()
-    await q.edit_message_text(f"🎯 **{task['title']}**\n\n{task.get('description','')}\n\n💰 Reward: {task.get('reward',0)} Points\n🏷 Audience: {audience}\n🔐 Verification: {task.get('verification_method','telegram_join')}", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    await q.edit_message_text(f"🎯 **{_md(task['title'])}**\n\n{_md(task.get('description',''))}\n\n💰 Reward: {task.get('reward',0)} Points\n🏷 Audience: {_md(audience)}\n🔐 Verification: {_md(task.get('verification_method','telegram_join'))}", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 
 async def task_complete_callback(update, context):
@@ -512,10 +543,10 @@ async def task_complete_callback(update, context):
     await q.answer(); tid=str(q.data)[len("task_complete_"):]; task=get_task(tid)
     if not task: await q.edit_message_text("⚠️ Task not found."); return
     ok,msg=await complete_task_async(q.from_user.id,tid,context.bot)
-    if ok and _vip_manual_review_required(q.from_user.id, task):
-        text = f"📨 **TASK SUBMITTED**\n\n🎯 {task['title']}\n\nYour VIP task has been sent to Admin for approval.\n💰 Reward will be credited after approval."
+    if ok and _manual_review_required(q.from_user.id, task):
+        text = f"📨 **TASK SUBMITTED**\n\n🎯 {_md(task['title'])}\n\nYour task has been sent to Admin for approval.\n💰 Reward will be credited after approval."
     else:
-        text = f"🎉 **TASK COMPLETED!**\n\n🎯 {task['title']}\n💰 Reward credited successfully." if ok else f"❌ **Task not completed**\n\n{msg}"
+        text = f"🎉 **TASK COMPLETED!**\n\n🎯 {_md(task['title'])}\n💰 Reward credited successfully." if ok else f"❌ **Task not completed**\n\n{_md(msg)}"
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks",callback_data="tasks")],[InlineKeyboardButton("🏠 Home",callback_data="home")]]), parse_mode="Markdown")
 
 
