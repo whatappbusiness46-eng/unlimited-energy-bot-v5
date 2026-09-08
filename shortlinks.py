@@ -14,8 +14,10 @@ from telegram import (
     InlineKeyboardMarkup,
 )
 from telegram.ext import ContextTypes
+from telegram.error import BadRequest
 
 from provider_integrations import get_offerwallme_shortlinks, _offerwallme_reward_points
+from config import OFFERWALLME_SHORTLINK_LIMIT
 
 from database import (
     get_user,
@@ -44,6 +46,15 @@ def _safe_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+async def _safe_edit(query, text, **kwargs):
+    try:
+        return await _safe_edit(query, text, **kwargs)
+    except BadRequest as exc:
+        if "Message is not modified" in str(exc):
+            return None
+        raise
 
 
 def _get_user(user_id):
@@ -291,7 +302,7 @@ async def offerwallme_shortlink_callback(update: Update, context: ContextTypes.D
     links = get_offerwallme_shortlinks(query.from_user.id)
     link = next((x for x in links if str(x.get("id")) == shortlink_id), None)
     if not link or not link.get("url"):
-        await query.edit_message_text(
+        await _safe_edit(query, 
             "⚠️ This Offerwall.me shortlink is no longer available.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Shortlinks", callback_data="shortlinks")]]),
         )
@@ -309,7 +320,7 @@ async def offerwallme_shortlink_callback(update: Update, context: ContextTypes.D
         f"💰 Reward: +{reward} Points\n\n"
     )
     text += "Open the shortlink and complete it normally. Reward is credited only after Offerwall.me sends a verified postback."
-    await query.edit_message_text(
+    await _safe_edit(query, 
         text,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🚀 Open Shortlink", url=str(link["url"]))],
@@ -359,7 +370,7 @@ async def shortlinks_page(
                 )])
         if offerwall_links:
             rows.append([InlineKeyboardButton("💰 OFFERWALL.ME SHORTLINKS", callback_data="shortlinks")])
-            for item in offerwall_links[:20]:
+            for item in offerwall_links[:OFFERWALLME_SHORTLINK_LIMIT]:
                 link_id = str(item.get("id") or "")
                 callback = f"owshort_{link_id}"
                 if not link_id or len(callback) > 64:
@@ -381,7 +392,7 @@ async def shortlinks_page(
     markup = InlineKeyboardMarkup(keyboard)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(
+        await _safe_edit(update.callback_query,
             text, reply_markup=markup, parse_mode="Markdown"
         )
     elif update.message:
@@ -410,7 +421,7 @@ async def shortlink_callback(
     item = get_shortlink(shortlink_id)
 
     if not item:
-        await query.edit_message_text(
+        await _safe_edit(query, 
             "⚠️ Shortlink not found.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(
@@ -431,7 +442,7 @@ async def shortlink_callback(
     )
 
     if not token:
-        await query.edit_message_text(
+        await _safe_edit(query, 
             "⏳ **SHORTLINK UNAVAILABLE**\n\n"
             "This shortlink is on cooldown or unavailable.",
             reply_markup=InlineKeyboardMarkup([
@@ -454,12 +465,12 @@ async def shortlink_callback(
     )
 
     if not url:
-        await query.edit_message_text(
+        await _safe_edit(query, 
             "⚠️ Shortlink URL could not be generated."
         )
         return
 
-    await query.edit_message_text(
+    await _safe_edit(query, 
         "🔗 **SHORTLINK**\n\n"
         f"📌 {item['name']}\n\n"
         "Open the shortlink and continue to the destination.\n"
@@ -501,7 +512,7 @@ async def shortlink_verify_callback(
     try:
         shortlink_id, token = payload.split("_", 1)
     except ValueError:
-        await query.edit_message_text(
+        await _safe_edit(query, 
             "⚠️ Invalid verification request."
         )
         return
@@ -509,7 +520,7 @@ async def shortlink_verify_callback(
     item = get_shortlink(shortlink_id)
 
     if not item:
-        await query.edit_message_text(
+        await _safe_edit(query, 
             "⚠️ Shortlink not found."
         )
         return
@@ -533,7 +544,7 @@ async def shortlink_verify_callback(
             "verified completion callback. No points were added."
         )
 
-    await query.edit_message_text(
+    await _safe_edit(query, 
         text,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton(

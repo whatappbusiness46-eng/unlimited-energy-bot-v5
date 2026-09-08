@@ -441,3 +441,6 @@ OFFERWALLME_API_KEY = os.getenv("OFFERWALLME_API_KEY", "").strip()
 OFFERWALLME_BEARER_TOKEN = os.getenv("OFFERWALLME_BEARER_TOKEN", "").strip()
 OFFERWALLME_DEFAULT_IP = os.getenv("OFFERWALLME_DEFAULT_IP", "0.0.0.0").strip()
 OFFERWALLME_COUNTRY = os.getenv("OFFERWALLME_COUNTRY", "BD").strip().upper()
+# Maximum Offerwall.me live tasks/shortlinks shown in the bot.
+OFFERWALLME_TASK_LIMIT = max(1, int(os.getenv("OFFERWALLME_TASK_LIMIT", "20")))
+OFFERWALLME_SHORTLINK_LIMIT = max(1, int(os.getenv("OFFERWALLME_SHORTLINK_LIMIT", "20")))

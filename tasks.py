@@ -15,7 +15,7 @@ from database import (
     db, users, get_user, update_user, add_balance, add_activity,
     get_membership_multiplier, use_energy, add_xp,
 )
-from config import ADMIN_ID
+from config import ADMIN_ID, OFFERWALLME_TASK_LIMIT
 from provider_integrations import get_offerwallme_tasks, submit_offerwallme_task_proof, _offerwallme_reward_points
 
 logger = logging.getLogger(__name__)
@@ -477,7 +477,7 @@ def tasks_menu(user_id=None):
         buttons.append([InlineKeyboardButton(f"{'🎯' if available else '✅'} {_md(task.get('title',''))} (+{_safe_int(task.get('reward'),0)})", callback_data=f"task_{task['id']}")])
     if user_id:
         try:
-            for task in get_offerwallme_tasks(user_id)[:20]:
+            for task in get_offerwallme_tasks(user_id)[:OFFERWALLME_TASK_LIMIT]:
                 task_id = str(task.get("id") or "")
                 title = str(task.get("title") or "Offerwall Task")
                 reward = _safe_int(task.get("reward"), 0)
@@ -519,7 +519,7 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {_md(t.get('title',''))} — +{_safe_int(t.get('reward'),0)} Points")
         if offerwall_tasks:
             lines += ["", "💰 **OFFERWALL.ME TASKS**"]
-            for t in offerwall_tasks[:20]:
+            for t in offerwall_tasks[:OFFERWALLME_TASK_LIMIT]:
                 reward = _offerwallme_reward_points(t.get("reward"), user.id)
                 lines.append(f"🟢 {_md(t.get('title','Offerwall Task'))} — +{reward} Points")
         lines.append("")
