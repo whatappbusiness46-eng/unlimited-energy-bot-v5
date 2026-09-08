@@ -51,9 +51,13 @@ if not MONGO_URI:
 
 client = MongoClient(
     MONGO_URI,
-    serverSelectionTimeoutMS=10000,
-    connectTimeoutMS=10000,
-    socketTimeoutMS=10000,
+    serverSelectionTimeoutMS=5000,
+    connectTimeoutMS=5000,
+    socketTimeoutMS=8000,
+    maxPoolSize=50,
+    minPoolSize=2,
+    waitQueueTimeoutMS=5000,
+    retryWrites=True,
 )
 
 
@@ -277,6 +281,18 @@ def ensure_indexes():
             unique=True,
             name="statistics_date_unique",
         )
+
+        # ----------------------------------------------------
+        # HIGH-FREQUENCY / ADMIN / PROVIDER COLLECTIONS
+        # ----------------------------------------------------
+        db["tasks"].create_index([("enabled", ASCENDING), ("created_at", ASCENDING)], name="tasks_enabled_created")
+        db["task_completions"].create_index([("status", ASCENDING), ("created_at", ASCENDING)], name="task_status_created")
+        db["task_completions"].create_index([("task_id", ASCENDING), ("status", ASCENDING)], name="task_status")
+        db["provider_events"].create_index([("provider", ASCENDING), ("event_id", ASCENDING)], unique=True, name="provider_event_unique")
+        db["provider_offers"].create_index([("provider", ASCENDING), ("enabled", ASCENDING), ("updated_at", DESCENDING)], name="provider_offers_active")
+        db["provider_disabled_offers"].create_index([("provider", ASCENDING), ("offer_id", ASCENDING)], name="provider_disabled_lookup")
+        db["payments"].create_index([("payment_id", ASCENDING)], unique=True, name="payment_id_unique")
+        db["payments"].create_index([("status", ASCENDING), ("created_at", DESCENDING)], name="payment_status_created")
 
     except Exception as error:
 
@@ -5558,6 +5574,47 @@ def set_vip_purchase_enabled(enabled):
     except Exception:
         logger.exception("Failed to save VIP purchase setting")
         return False
+
+def maintenance_reset_member_wallets():
+    """Safely reset member wallet balances without deleting accounts/history.
+
+    This intentionally does NOT touch task completion records, provider events,
+    withdrawals, payments, referrals, XP, or user documents themselves.
+    """
+    result = users.update_many(
+        {},
+        {"$set": {
+            "balance": 0,
+            "bonus_balance": 0,
+            "premium_balance": 0,
+        }}
+    )
+    return int(getattr(result, "modified_count", 0))
+
+
+def maintenance_cleanup_old_data(log_days=30, stats_days=90):
+    """Remove only disposable operational data; preserve member/account and earning records."""
+    now = int(time.time())
+    log_cutoff = now - max(1, int(log_days)) * 86400
+    stats_cutoff = now - max(1, int(stats_days)) * 86400
+    removed_logs = security_logs.delete_many({"created_at": {"$lt": log_cutoff}}).deleted_count
+    removed_stats = daily_statistics.delete_many({"date": {"$lt": time.strftime("%Y-%m-%d", time.gmtime(stats_cutoff))}}).deleted_count
+    return {"security_logs": int(removed_logs), "daily_statistics": int(removed_stats)}
+
+
+def maintenance_optimize_indexes():
+    ensure_indexes()
+    try:
+        from pymongo import ASCENDING, DESCENDING
+        db["tasks"].create_index([("enabled", ASCENDING), ("created_at", ASCENDING)], name="tasks_enabled_created")
+        db["task_completions"].create_index([("status", ASCENDING), ("created_at", ASCENDING)], name="task_status_created")
+        db["task_completions"].create_index([("task_id", ASCENDING), ("status", ASCENDING)], name="task_status")
+        db["provider_events"].create_index([("provider", ASCENDING), ("event_id", ASCENDING)], unique=True, name="provider_event_unique")
+        return True
+    except Exception:
+        logger.exception("Maintenance index optimization failed")
+        return False
+
 # ==================================================
 # INITIALIZE DATABASE
 # ==================================================

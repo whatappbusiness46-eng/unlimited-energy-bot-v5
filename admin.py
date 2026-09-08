@@ -52,6 +52,9 @@ from database import (
     total_withdrawals,
     is_vip_purchase_enabled,
     set_vip_purchase_enabled,
+    maintenance_reset_member_wallets,
+    maintenance_cleanup_old_data,
+    maintenance_optimize_indexes,
 )
 
 
@@ -119,6 +122,13 @@ def admin_menu():
             InlineKeyboardButton(
                 "🎁 Manage Rewards",
                 callback_data="admin_rewards",
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "🧹 Database / Maintenance",
+                callback_data="admin_maintenance",
             )
         ],
 
@@ -3157,6 +3167,85 @@ async def admin_vip_toggle(
         except Exception:
             pass
 # ==================================================
+async def admin_maintenance(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id):
+        if q: await q.answer("🚫 Admin only.", show_alert=True)
+        return
+    await q.answer()
+    text = (
+        "🧹 **DATABASE / MAINTENANCE**\n\n"
+        "Safe tools for slow-bot situations.\n\n"
+        "🟢 **Optimize indexes** — improves common DB lookups.\n"
+        "🧹 **Clean old logs/stats** — removes only disposable operational data.\n"
+        "⚠️ **Reset member wallets** — sets Balance, Bonus Balance and Premium Balance to 0.\n\n"
+        "👥 User accounts, task completion history, withdrawals, payments and provider conversion records are NOT deleted."
+    )
+    buttons = [
+        [InlineKeyboardButton("⚡ Optimize DB Indexes", callback_data="admin_maintenance_indexes")],
+        [InlineKeyboardButton("🧹 Clean Old Logs/Stats", callback_data="admin_maintenance_clean")],
+        [InlineKeyboardButton("⚠️ Reset ALL Member Wallets", callback_data="admin_maintenance_reset_confirm")],
+        [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")],
+    ]
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+
+async def admin_maintenance_reset_confirm(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id): return
+    await q.answer()
+    buttons = [
+        [InlineKeyboardButton("❌ Cancel", callback_data="admin_maintenance")],
+        [InlineKeyboardButton("⚠️ YES, RESET WALLETS", callback_data="admin_maintenance_reset")],
+    ]
+    await q.edit_message_text(
+        "⚠️ **FINAL CONFIRMATION**\n\nThis will set every member's `balance`, `bonus_balance`, and `premium_balance` to **0**.\n\nIt will NOT delete users or task/payment/withdrawal/provider history.\n\nContinue?",
+        reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown"
+    )
+
+
+async def admin_maintenance_reset(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id): return
+    try:
+        changed = maintenance_reset_member_wallets()
+        await q.answer(f"Reset done: {changed} member records.", show_alert=True)
+        await admin_maintenance(update, context)
+    except Exception:
+        logger.exception("Member wallet reset failed")
+        await q.answer("❌ Wallet reset failed.", show_alert=True)
+
+
+async def admin_maintenance_clean(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id): return
+    try:
+        result = maintenance_cleanup_old_data(30, 90)
+        await q.answer("🧹 Old disposable data cleaned.", show_alert=True)
+        await q.edit_message_text(
+            "🧹 **CLEANUP COMPLETE**\n\n"
+            f"Security logs removed: {result['security_logs']}\n"
+            f"Old daily statistics removed: {result['daily_statistics']}\n\n"
+            "Member accounts, balances, task history, withdrawals, payments and provider events were preserved.",
+            reply_markup=admin_back(), parse_mode="Markdown"
+        )
+    except Exception:
+        logger.exception("Maintenance cleanup failed")
+        await q.answer("❌ Cleanup failed.", show_alert=True)
+
+
+async def admin_maintenance_indexes(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id): return
+    try:
+        ok = maintenance_optimize_indexes()
+        await q.answer("⚡ DB indexes optimized." if ok else "⚠️ Some indexes could not be optimized.", show_alert=True)
+        await admin_maintenance(update, context)
+    except Exception:
+        logger.exception("Index optimization failed")
+        await q.answer("❌ Index optimization failed.", show_alert=True)
+
+
 # ADMIN CALLBACK ROUTER
 # ==================================================
 
@@ -3194,6 +3283,7 @@ async def admin_callback(
         "admin_ban": admin_ban,
         "admin_stats": admin_statistics,
         "admin_rewards": admin_rewards,
+        "admin_maintenance": admin_maintenance,
         "admin_tasks": admin_tasks,
         "admin_task_pending": admin_task_pending,
         "admin_membership_payments": admin_membership_payments,
@@ -3228,6 +3318,15 @@ async def admin_callback(
         "admin_vip_toggle": admin_vip_toggle,
         "admin_premium_on": admin_premium_on,
     }
+
+    if data == "admin_maintenance_reset_confirm":
+        await admin_maintenance_reset_confirm(update, context); return
+    if data == "admin_maintenance_reset":
+        await admin_maintenance_reset(update, context); return
+    if data == "admin_maintenance_clean":
+        await admin_maintenance_clean(update, context); return
+    if data == "admin_maintenance_indexes":
+        await admin_maintenance_indexes(update, context); return
 
     if data.startswith("admin_payment_view_"):
         await admin_payment_view(update, context); return
