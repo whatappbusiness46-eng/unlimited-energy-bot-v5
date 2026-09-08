@@ -480,7 +480,7 @@ def tasks_menu(user_id=None):
             for task in get_offerwallme_tasks(user_id)[:OFFERWALLME_TASK_LIMIT]:
                 task_id = str(task.get("id") or "")
                 title = str(task.get("title") or "Offerwall Task")
-                reward = _safe_int(task.get("reward"), 0)
+                reward = _offerwallme_reward_points(task.get("reward", task.get("payout", task.get("amount", 0))), user_id)
                 callback = f"owtask_{task_id}"
                 if task_id and len(callback) <= 64:
                     buttons.append([InlineKeyboardButton(f"💰 {title[:28]} (+{reward})", callback_data=callback)])

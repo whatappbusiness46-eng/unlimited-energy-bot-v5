@@ -183,7 +183,21 @@ def get_offerwallme_tasks(user_id: int):
         task_id = _first(raw, ("id", "task_id", "taskId"))
         if not task_id:
             continue
-        result.append(dict(raw, id=str(task_id)))
+        reward = _first(
+            raw,
+            (
+                "reward", "payout", "amount", "points", "value",
+                "user_reward", "userReward", "reward_points", "rewardPoints",
+            ),
+            0,
+        )
+        result.append(
+            dict(
+                raw,
+                id=str(task_id),
+                reward=reward,
+            )
+        )
     return result
 
 

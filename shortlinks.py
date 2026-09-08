@@ -50,7 +50,7 @@ def _safe_int(value, default=0):
 
 async def _safe_edit(query, text, **kwargs):
     try:
-        return await _safe_edit(query, text, **kwargs)
+        return await query.edit_message_text(text, **kwargs)
     except BadRequest as exc:
         if "Message is not modified" in str(exc):
             return None

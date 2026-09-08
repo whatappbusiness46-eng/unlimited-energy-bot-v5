@@ -140,9 +140,10 @@ def provider_postback(provider):
     payload.update(request.form.to_dict(flat=True))
 
     result = process_postback(provider, payload)
-    status_code = 200 if result.get("ok") else 400
-    # Plain text is friendlier for most CPA networks.
-    return jsonify(result), status_code
+    # Provider postbacks should receive HTTP 200 even when the conversion is
+    # rejected; the JSON body still reports the exact reason. This prevents
+    # unnecessary provider retries for invalid/duplicate callbacks.
+    return jsonify(result), 200
 
 
 def run_web_server():
