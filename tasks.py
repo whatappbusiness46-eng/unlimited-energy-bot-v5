@@ -16,6 +16,7 @@ from database import (
     get_membership_multiplier, use_energy, add_xp,
 )
 from config import ADMIN_ID
+from provider_integrations import get_offerwallme_tasks, submit_offerwallme_task_proof, _offerwallme_reward_points
 
 logger = logging.getLogger(__name__)
 
@@ -474,6 +475,17 @@ def tasks_menu(user_id=None):
     for task in get_tasks(user_id=user_id):
         available = task_available(user_id, task["id"]) if user_id else True
         buttons.append([InlineKeyboardButton(f"{'🎯' if available else '✅'} {_md(task.get('title',''))} (+{_safe_int(task.get('reward'),0)})", callback_data=f"task_{task['id']}")])
+    if user_id:
+        try:
+            for task in get_offerwallme_tasks(user_id)[:20]:
+                task_id = str(task.get("id") or "")
+                title = str(task.get("title") or "Offerwall Task")
+                reward = _safe_int(task.get("reward"), 0)
+                callback = f"owtask_{task_id}"
+                if task_id and len(callback) <= 64:
+                    buttons.append([InlineKeyboardButton(f"💰 {title[:28]} (+{reward})", callback_data=callback)])
+        except Exception:
+            logger.exception("Offerwall.me task menu fetch failed | user=%s", user_id)
     buttons.append([InlineKeyboardButton("🏠 Home", callback_data="home")])
     return InlineKeyboardMarkup(buttons)
 
@@ -485,9 +497,14 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db_user or db_user.get("banned") or db_user.get("blacklisted"):
         await message.reply_text("🚫 Your account is restricted."); return
     task_list=get_tasks(user_id=user.id); count,_=_daily_count(db_user); settings=db["bot_settings"].find_one({"_id":"main"}) or {}; limit=max(1,_safe_int(settings.get("daily_task_limit"),20))
+    try:
+        offerwall_tasks = get_offerwallme_tasks(user.id)
+    except Exception:
+        logger.exception("Offerwall.me task fetch failed | user=%s", user.id)
+        offerwall_tasks = []
     normal=[t for t in task_list if t.get("audience","normal") in {"normal","both"}]
     vip=[t for t in task_list if t.get("audience","normal") in {"vip","both"}]
-    if not task_list:
+    if not task_list and not offerwall_tasks:
         text="📋 **TASK CENTER**\n\nNo tasks are available for your membership right now."
     else:
         lines=["📋 **TASK CENTER**", "", f"📊 Daily Tasks: {count}/{limit}", ""]
@@ -500,6 +517,11 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines += ["💎 **VIP TASKS**"]
             for t in vip:
                 lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {_md(t.get('title',''))} — +{_safe_int(t.get('reward'),0)} Points")
+        if offerwall_tasks:
+            lines += ["", "💰 **OFFERWALL.ME TASKS**"]
+            for t in offerwall_tasks[:20]:
+                reward = _offerwallme_reward_points(t.get("reward"), user.id)
+                lines.append(f"🟢 {_md(t.get('title','Offerwall Task'))} — +{reward} Points")
         lines.append("")
         lines.append("Complete each available task once. Rewards are permanent and cannot be claimed again.")
         lines.append("")
@@ -539,5 +561,74 @@ async def task_complete_callback(update, context):
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks",callback_data="tasks")],[InlineKeyboardButton("🏠 Home",callback_data="home")]]), parse_mode="Markdown")
 
 
-HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback}
-__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","HANDLER_FUNCTIONS","ensure_task_indexes"]
+async def offerwallme_task_callback(update, context):
+    q = update.callback_query
+    if not q or not str(q.data).startswith("owtask_"):
+        return
+    await q.answer()
+    task_id = str(q.data)[len("owtask_"):]
+    try:
+        tasks = get_offerwallme_tasks(q.from_user.id)
+    except Exception:
+        tasks = []
+    task = next((t for t in tasks if str(t.get("id")) == task_id), None)
+    if not task:
+        await q.edit_message_text("⚠️ This Offerwall.me task is no longer available.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks", callback_data="tasks")]]))
+        return
+    reward = _offerwallme_reward_points(task.get("reward"), q.from_user.id)
+    instructions = str(task.get("instructions") or task.get("description") or "").replace("<p>", "").replace("</p>", "").strip()
+    proof_type = str(task.get("proof_type") or "Text")
+    proof_text = str(task.get("proof_text") or "Submit the required proof")
+    context.user_data.pop("offerwallme_pending_task", None)
+    context.user_data["offerwallme_task_preview"] = task_id
+    text = f"🎯 **{_md(task.get('title','Offerwall Task'))}**\\n\\n"
+    if task.get("description"):
+        text += f"{_md(task.get('description'))}\\n\\n"
+    if instructions:
+        text += f"📋 **Instructions:**\\n{_md(instructions)}\\n\\n"
+    text += f"💰 Reward: +{reward} Points\\n🔐 Proof type: {_md(proof_type)}\\n✍️ {_md(proof_text)}"
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("📨 Submit Proof", callback_data=f"owtask_proof_{task_id}")],
+        [InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")],
+    ]), parse_mode="Markdown")
+
+
+async def offerwallme_task_proof_callback(update, context):
+    q = update.callback_query
+    if not q or not str(q.data).startswith("owtask_proof_"):
+        return
+    await q.answer()
+    task_id = str(q.data)[len("owtask_proof_"):]
+    context.user_data["offerwallme_pending_task"] = task_id
+    await q.edit_message_text(
+        "📨 **SUBMIT TASK PROOF**\\n\\nSend your proof in the next message.\\n\\n"
+        "⚠️ Submit only genuine proof. The provider/admin decides approval, and rewards are credited only after verified completion.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="tasks")]]),
+        parse_mode="Markdown",
+    )
+
+
+async def offerwallme_proof_message_handler(update, context):
+    task_id = context.user_data.get("offerwallme_pending_task")
+    if not task_id or not update.effective_message or not update.effective_user:
+        return False
+    proof = str(update.effective_message.text or "").strip()
+    if not proof:
+        return False
+    result = submit_offerwallme_task_proof(update.effective_user.id, str(task_id), proof)
+    context.user_data.pop("offerwallme_pending_task", None)
+    if result.get("ok"):
+        await update.effective_message.reply_text(
+            "✅ Proof submitted successfully.\n\nOfferwall.me will approve it instantly or after advertiser review. Your Points are credited only after the verified postback.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")]]),
+        )
+    else:
+        await update.effective_message.reply_text(
+            "❌ Proof submission failed. Please try the task again later.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Tasks", callback_data="tasks")]]),
+        )
+    return True
+
+
+HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback,"offerwallme_task_callback":offerwallme_task_callback,"offerwallme_task_proof_callback":offerwallme_task_proof_callback}
+__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","offerwallme_task_callback","offerwallme_task_proof_callback","offerwallme_proof_message_handler","HANDLER_FUNCTIONS","ensure_task_indexes"]

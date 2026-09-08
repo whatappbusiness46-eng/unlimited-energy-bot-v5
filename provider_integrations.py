@@ -1,5 +1,5 @@
 # provider_integrations.py
-# CPAGrip-only live offer + verified postback integration.
+# CPAGrip + Offerwall.me live earning + verified postback integration.
 
 import hashlib
 import hmac
@@ -13,7 +13,7 @@ from typing import Any, Dict, Iterable, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
-from database import db, add_balance, add_activity, get_user, record_transaction, remove_balance
+from database import db, add_balance, add_activity, get_user, record_transaction, remove_balance, get_membership_multiplier
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,167 @@ def _json_request(url: str, *, method="GET", params=None, headers=None,
         except json.JSONDecodeError:
             return raw
 
+
+
+def _offerwallme_credentials():
+    return _env("OFFERWALLME_API_KEY"), _env("OFFERWALLME_BEARER_TOKEN")
+
+
+def _offerwallme_public_ip():
+    configured = _env("OFFERWALLME_DEFAULT_IP")
+    if configured and configured not in {"0.0.0.0", "127.0.0.1"}:
+        return configured
+    cache = getattr(_offerwallme_public_ip, "_cache", None)
+    now = time.time()
+    if cache and now - cache.get("ts", 0) < 3600 and cache.get("ip"):
+        return cache["ip"]
+    try:
+        req = Request("https://api.ipify.org", headers={"User-Agent": "UnlimitedEnergyBot/Final"})
+        with urlopen(req, timeout=5) as response:
+            ip = response.read().decode("utf-8", errors="replace").strip()
+        if ip:
+            _offerwallme_public_ip._cache = {"ip": ip, "ts": now}
+            return ip
+    except Exception:
+        logger.warning("Offerwall.me public IP lookup failed", exc_info=True)
+    return configured or "127.0.0.1"
+
+
+def _offerwallme_request(endpoint: str, user_id: int, *, method="GET", body=None):
+    api_key, bearer = _offerwallme_credentials()
+    if not api_key or not bearer:
+        return {"status": 0, "error": "missing_offerwallme_credentials"}
+    params = {
+        "api": api_key,
+        "id": str(user_id),
+        "ip": _offerwallme_public_ip(),
+        "token": bearer,
+        "country": _env("OFFERWALLME_COUNTRY", "BD").upper(),
+    }
+    endpoint = str(endpoint or "").strip()
+    if not endpoint:
+        return {"status": 0, "error": "missing_endpoint"}
+    if method.upper() == "POST":
+        payload = dict(body or {})
+        payload.update(params)
+        return _json_request(endpoint, method="POST", body=payload)
+    return _json_request(endpoint, method="GET", params=params)
+
+
+def _offerwallme_list(payload):
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if isinstance(data, list):
+        return data
+    for key in ("offers", "tasks", "shortlinks", "results", "items"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def get_offerwallme_offers(user_id: int):
+    if not _enabled("offerwallme"):
+        return []
+    payload = _offerwallme_request(
+        _env("OFFERWALLME_OFFERS_API_URL", "https://offerwall.me/offerapi.php"),
+        user_id,
+    )
+    result = []
+    for raw in _offerwallme_list(payload):
+        if not isinstance(raw, dict):
+            continue
+        offer_id = _first(raw, ("id", "offer_id", "offerId"))
+        url = _first(raw, ("url", "link", "tracking_url"))
+        if not offer_id or not url:
+            continue
+        result.append({
+            "provider": "offerwallme",
+            "offer_id": str(offer_id),
+            "title": str(_first(raw, ("title", "name"), "Offerwall.me Offer")),
+            "description": str(_first(raw, ("description", "desc"), "") or ""),
+            "url": str(url),
+            "provider_reward": _first(raw, ("reward", "payout"), 0),
+            "category": str(_first(raw, ("category", "provider", "type"), "") or ""),
+            "platform": str(_first(raw, ("devices", "device", "platform"), "") or ""),
+            "updated_at": int(time.time()),
+        })
+    return result
+
+
+def sync_offerwallme_offers(user_id: int) -> int:
+    offers = get_offerwallme_offers(user_id)
+    for offer in offers:
+        provider_offers.update_one(
+            {"provider": "offerwallme", "offer_id": offer["offer_id"]},
+            {"$set": offer},
+            upsert=True,
+        )
+    return len(offers)
+
+
+def get_offerwallme_tasks(user_id: int):
+    if not _enabled("offerwallme"):
+        return []
+    payload = _offerwallme_request(
+        _env("OFFERWALLME_TASKS_API_URL", "https://offerwall.me/taskapi.php"),
+        user_id,
+    )
+    result = []
+    for raw in _offerwallme_list(payload):
+        if not isinstance(raw, dict):
+            continue
+        task_id = _first(raw, ("id", "task_id", "taskId"))
+        if not task_id:
+            continue
+        result.append(dict(raw, id=str(task_id)))
+    return result
+
+
+def submit_offerwallme_task_proof(user_id: int, task_id: str, proof: str):
+    if not _enabled("offerwallme"):
+        return {"ok": False, "error": "provider_disabled"}
+    payload = _offerwallme_request(
+        _env("OFFERWALLME_TASK_SUBMIT_API_URL", "https://offerwall.me/tasksubmit.php"),
+        user_id,
+        method="POST",
+        body={"task_id": str(task_id), "proof": str(proof or "")},
+    )
+    if isinstance(payload, dict):
+        status = payload.get("status")
+        ok = bool(payload.get("ok")) or status in {200, "200", "success", "approved", "pending"}
+        return {"ok": ok, "raw": payload, **({k: payload[k] for k in ("message", "status") if k in payload})}
+    return {"ok": False, "raw": payload}
+
+
+def get_offerwallme_shortlinks(user_id: int):
+    if not _enabled("offerwallme"):
+        return []
+    payload = _offerwallme_request(
+        _env("OFFERWALLME_SHORTLINKS_API_URL", "https://offerwall.me/slapi.php"),
+        user_id,
+    )
+    result = []
+    for raw in _offerwallme_list(payload):
+        if not isinstance(raw, dict):
+            continue
+        link_id = _first(raw, ("id", "shortlink_id", "shortlinkId"))
+        url = _first(raw, ("url", "link", "tracking_url", "shortlink"))
+        if not link_id or not url:
+            continue
+        result.append({
+            "provider": "offerwallme",
+            "id": str(link_id),
+            "title": str(_first(raw, ("title", "name"), "Offerwall.me Shortlink")),
+            "description": str(_first(raw, ("description", "desc"), "") or ""),
+            "url": str(url),
+            "reward": _first(raw, ("reward", "points", "amount"), 0),
+            "interval": _first(raw, ("interval", "cooldown"), 0),
+        })
+    return result
 
 def _first(data, keys, default=None):
     if not isinstance(data, dict):
@@ -217,29 +378,32 @@ def sync_cpagrip_offers(user_id: int) -> int:
 
 
 def get_provider_offers(user_id: int, providers: Optional[Iterable[str]] = None):
-    providers = [p.lower() for p in (providers or ("cpagrip",))]
-    providers = [p for p in providers if p == "cpagrip" and _enabled(p)]
-    for provider in providers:
+    providers = [p.lower() for p in (providers or ("cpagrip", "offerwallme"))]
+    providers = [p for p in providers if p in {"cpagrip", "offerwallme"} and _enabled(p)]
+    if "cpagrip" in providers:
         sync_cpagrip_offers(user_id)
-
+    if "offerwallme" in providers:
+        sync_offerwallme_offers(user_id)
     if not providers:
         return []
-
     disabled = {
-        str(x["offer_id"])
+        (str(x.get("provider")), str(x.get("offer_id")))
         for x in provider_disabled_offers.find(
-            {"provider": {"$in": providers}}, {"offer_id": 1}
+            {"provider": {"$in": providers}}, {"provider": 1, "offer_id": 1}
         )
     }
     docs = provider_offers.find(
         {"provider": {"$in": providers}}, {"_id": 0}
     ).sort("updated_at", -1).limit(100)
-    return [dict(x) for x in docs if str(x.get("offer_id")) not in disabled]
+    return [
+        dict(x) for x in docs
+        if (str(x.get("provider")), str(x.get("offer_id"))) not in disabled
+    ]
 
 
 def set_provider_offer_enabled(provider: str, offer_id: str, enabled: bool):
     provider, offer_id = provider.lower().strip(), str(offer_id).strip()
-    if provider != "cpagrip" or not offer_id:
+    if provider not in {"cpagrip", "offerwallme"} or not offer_id:
         return False
     if enabled:
         provider_disabled_offers.delete_one({"provider": provider, "offer_id": offer_id})
@@ -254,7 +418,7 @@ def set_provider_offer_enabled(provider: str, offer_id: str, enabled: bool):
 
 def delete_provider_offer(provider: str, offer_id: str):
     provider, offer_id = provider.lower().strip(), str(offer_id).strip()
-    if provider != "cpagrip" or not offer_id:
+    if provider not in {"cpagrip", "offerwallme"} or not offer_id:
         return False
     provider_offers.delete_one({"provider": provider, "offer_id": offer_id})
     provider_disabled_offers.delete_one({"provider": provider, "offer_id": offer_id})
@@ -289,7 +453,7 @@ def _verify_postback(provider: str, params: Dict[str, Any]) -> bool:
     return bool(supplied) and hmac.compare_digest(supplied, secret)
 
 
-def _offerwallme_reward_points(reward_raw: Any) -> int:
+def _offerwallme_reward_points(reward_raw: Any, user_id: int = None) -> int:
     """Convert Offerwall.me payout to the configured member reward.
 
     Offerwall.me's Amount is treated as USD payout. The member receives only
@@ -303,6 +467,13 @@ def _offerwallme_reward_points(reward_raw: Any) -> int:
         if reward <= 0 or share <= 0 or rate <= 0:
             return 0
         points = int((reward * share / Decimal("100") * rate).quantize(Decimal("1")))
+        if user_id is not None:
+            try:
+                multiplier = Decimal(str(get_membership_multiplier(int(user_id))))
+                if multiplier > 0:
+                    points = int((Decimal(points) * multiplier).quantize(Decimal("1")))
+            except (ValueError, TypeError, InvalidOperation):
+                pass
         return max(1, points)
     except (InvalidOperation, ValueError, TypeError):
         return 0
@@ -384,7 +555,7 @@ def _process_offerwallme_postback(params: Dict[str, Any]):
     if existing:
         return {"ok": True, "message": "duplicate_ignored"}
 
-    points = _offerwallme_reward_points(reward_raw)
+    points = _offerwallme_reward_points(reward_raw, user_id)
     if points <= 0:
         return {"ok": False, "error": "invalid_reward"}
 

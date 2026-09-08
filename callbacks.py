@@ -86,7 +86,7 @@ from earn import (
     claim_test_task,
 )
 
-from tasks import tasks_page as task_menu_page, task_callback, task_complete_callback
+from tasks import tasks_page as task_menu_page, task_callback, task_complete_callback, offerwallme_task_callback, offerwallme_task_proof_callback
 
 from payments import method_keyboard, payment_instructions, create_payment, submit_reference, get_payment
 from config import PREMIUM_CASH_PRICE, VIP1_CASH_PRICE, VIP2_CASH_PRICE, VIP3_CASH_PRICE, VIP4_CASH_PRICE, VIP5_CASH_PRICE
@@ -95,6 +95,7 @@ from shortlinks import (
     shortlinks_page,
     shortlink_callback,
     shortlink_verify_callback,
+    offerwallme_shortlink_callback,
 )
 
 
@@ -1422,6 +1423,17 @@ async def button_callback(
     # SHORTLINK ACTIONS
     # ========================================================
 
+    if data.startswith("owshort_"):
+        try:
+            await offerwallme_shortlink_callback(update, context)
+        except Exception:
+            logger.exception("Offerwall.me shortlink callback failed")
+            await _safe_edit_message_text(query,
+                "⚠️ Offerwall.me shortlink is temporarily unavailable.",
+                reply_markup=back_earn_keyboard(),
+            )
+        return
+
     if data.startswith("shortlink_verify_"):
         try:
             await shortlink_verify_callback(update, context)
@@ -1449,6 +1461,14 @@ async def button_callback(
     # ========================================================
     if data == "tasks":
         await task_menu_page(update, context)
+        return
+
+    if data.startswith("owtask_proof_"):
+        await offerwallme_task_proof_callback(update, context)
+        return
+
+    if data.startswith("owtask_"):
+        await offerwallme_task_callback(update, context)
         return
     if data.startswith("task_complete_"):
         await task_complete_callback(update, context)

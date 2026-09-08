@@ -48,6 +48,7 @@ from admin import (
 )
 
 from payments import payment_text_handler
+from tasks import offerwallme_proof_message_handler
 
 from withdraw import (
     withdraw_text_handler,
@@ -272,6 +273,12 @@ async def text_message_router(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
+    # --------------------------------------------------------
+    # OFFERWALL.ME TASK PROOF FLOW
+    # --------------------------------------------------------
+    if await offerwallme_proof_message_handler(update, context):
+        return
 
     # --------------------------------------------------------
     # MEMBERSHIP PAYMENT REFERENCE FLOW

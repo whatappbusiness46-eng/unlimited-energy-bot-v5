@@ -15,6 +15,8 @@ from telegram import (
 )
 from telegram.ext import ContextTypes
 
+from provider_integrations import get_offerwallme_shortlinks, _offerwallme_reward_points
+
 from database import (
     get_user,
     update_user,
@@ -276,6 +278,48 @@ def complete_shortlink(
 
 
 
+async def offerwallme_shortlink_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    data = str(query.data or "")
+    prefix = "owshort_"
+    if not data.startswith(prefix):
+        return
+    await query.answer()
+    shortlink_id = data[len(prefix):]
+    links = get_offerwallme_shortlinks(query.from_user.id)
+    link = next((x for x in links if str(x.get("id")) == shortlink_id), None)
+    if not link or not link.get("url"):
+        await query.edit_message_text(
+            "⚠️ This Offerwall.me shortlink is no longer available.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Shortlinks", callback_data="shortlinks")]]),
+        )
+        return
+    reward = _offerwallme_reward_points(link.get("reward"), query.from_user.id)
+    title = str(link.get("title") or "Offerwall.me Shortlink")
+    description = str(link.get("description") or "").strip()
+    text = (
+        "🔗 **OFFERWALL.ME SHORTLINK**\n\n"
+        f"📌 {title}\n"
+        f"💰 Reward: +{reward} Points\n\n"
+        f"{description}\n\n" if description else
+        "🔗 **OFFERWALL.ME SHORTLINK**\n\n"
+        f"📌 {title}\n"
+        f"💰 Reward: +{reward} Points\n\n"
+    )
+    text += "Open the shortlink and complete it normally. Reward is credited only after Offerwall.me sends a verified postback."
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚀 Open Shortlink", url=str(link["url"]))],
+            [InlineKeyboardButton("🔄 Refresh Shortlinks", callback_data="shortlinks")],
+            [InlineKeyboardButton("🏠 Home", callback_data="home")],
+        ]),
+        parse_mode="Markdown",
+    )
+
+
 async def shortlinks_page(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -286,8 +330,13 @@ async def shortlinks_page(
         return
 
     items = get_shortlinks(include_disabled=False)
+    try:
+        offerwall_links = get_offerwallme_shortlinks(user.id)
+    except Exception:
+        logger.exception("Offerwall.me shortlink fetch failed | user=%s", user.id)
+        offerwall_links = []
 
-    if not items:
+    if not items and not offerwall_links:
         text = (
             "🔗 **SHORTLINKS**\n\n"
             "No shortlinks are available right now."
@@ -298,8 +347,8 @@ async def shortlinks_page(
     else:
         text = (
             "🔗 **SHORTLINKS**\n\n"
-            "Open useful links through the configured shortlink provider.\n"
-            "Member points are not awarded for shortlink clicks."
+            "Open available shortlinks and complete them normally.\n"
+            "Offerwall.me rewards are credited only after a verified provider postback."
         )
         rows = []
         for item in items:
@@ -307,6 +356,19 @@ async def shortlinks_page(
                 rows.append([InlineKeyboardButton(
                     f"🔗 {item['name']}",
                     callback_data=f"shortlink_{item['id']}",
+                )])
+        if offerwall_links:
+            rows.append([InlineKeyboardButton("💰 OFFERWALL.ME SHORTLINKS", callback_data="shortlinks")])
+            for item in offerwall_links[:20]:
+                link_id = str(item.get("id") or "")
+                callback = f"owshort_{link_id}"
+                if not link_id or len(callback) > 64:
+                    continue
+                reward = _offerwallme_reward_points(item.get("reward"), user.id)
+                title = str(item.get("title") or "Offerwall Shortlink")[:28]
+                rows.append([InlineKeyboardButton(
+                    f"💰 {title} (+{reward})",
+                    callback_data=callback,
                 )])
         if not rows:
             text = (
@@ -508,6 +570,7 @@ __all__ = [
     "shortlinks_page",
     "shortlink_callback",
     "shortlink_verify_callback",
+    "offerwallme_shortlink_callback",
     "HANDLER_FUNCTIONS",
   ]
   
