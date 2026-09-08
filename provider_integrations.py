@@ -13,7 +13,7 @@ from typing import Any, Dict, Iterable, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
-from database import db, add_balance, add_activity, get_user, record_transaction
+from database import db, add_balance, add_activity, get_user, record_transaction, remove_balance
 
 logger = logging.getLogger(__name__)
 
@@ -309,44 +309,25 @@ def _offerwallme_reward_points(reward_raw: Any) -> int:
 
 
 def _offerwallme_signature_valid(params: Dict[str, Any]) -> bool:
-    """Validate Offerwall.me postback authentication without trusting client data.
+    """Verify Offerwall.me's documented MD5 postback signature.
 
-    We support the common password/token form and HMAC-SHA256 signatures. The
-    exact provider dashboard secret remains server-side. If Offerwall.me uses
-    another documented signature scheme for this account, it can be added here
-    without weakening the fail-closed behavior.
+    Formula from Offerwall.me documentation:
+        md5(subId + transId + reward + secretKey)
     """
     secret = _env("OFFERWALLME_POSTBACK_SECRET")
     if not secret:
         return False
 
-    supplied = str(
-        params.get("password") or params.get("secret") or
-        params.get("token") or params.get("signature") or
-        params.get("sign") or params.get("hash") or ""
-    ).strip()
-    if not supplied:
+    sub_id = params.get("subId")
+    trans_id = params.get("transId")
+    reward = params.get("reward")
+    supplied = str(params.get("signature") or "").strip().lower()
+    if sub_id in (None, "") or trans_id in (None, "") or reward in (None, "") or not supplied:
         return False
 
-    # Some publisher configurations send the private secret directly.
-    if hmac.compare_digest(supplied, secret):
-        return True
-
-    signature_fields = {"signature", "sign", "hash"}
-    supplied_is_signature = any(str(params.get(k) or "").strip() == supplied for k in signature_fields)
-    if not supplied_is_signature:
-        return False
-
-    # Canonical query-string HMAC, excluding authentication fields.
-    canonical = "&".join(
-        f"{k}={params[k]}" for k in sorted(params)
-        if k not in {"signature", "sign", "hash", "password", "secret", "token"}
-    )
-    candidates = (
-        hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest(),
-        hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).digest().hex(),
-    )
-    return any(hmac.compare_digest(supplied.lower(), c.lower()) for c in candidates)
+    raw = f"{sub_id}{trans_id}{reward}{secret}"
+    expected = hashlib.md5(raw.encode("utf-8")).hexdigest().lower()
+    return hmac.compare_digest(supplied, expected)
 
 
 def _process_offerwallme_postback(params: Dict[str, Any]):
@@ -355,7 +336,12 @@ def _process_offerwallme_postback(params: Dict[str, Any]):
     if not _env("OFFERWALLME_POSTBACK_SECRET"):
         return {"ok": False, "error": "missing_postback_secret"}
 
-    user_raw = next((params.get(k) for k in ("subid", "sub_id", "sub", "user_id", "uid") if params.get(k) not in (None, "")), None)
+    # Offerwall.me uses these exact parameter names.
+    user_raw = params.get("subId")
+    trans_id = str(params.get("transId") or "").strip()
+    reward_raw = params.get("reward")
+    status = str(params.get("status") or "").strip()
+
     if user_raw in (None, ""):
         return {"ok": False, "error": "missing_user"}
     try:
@@ -365,37 +351,50 @@ def _process_offerwallme_postback(params: Dict[str, Any]):
     if not get_user(user_id, create=False):
         return {"ok": False, "error": "user_not_found"}
 
+    if not trans_id:
+        return {"ok": False, "error": "missing_transaction_id"}
+    if reward_raw in (None, ""):
+        return {"ok": False, "error": "missing_reward"}
+
     if not _offerwallme_signature_valid(params):
         return {"ok": False, "error": "invalid_signature"}
 
-    event_id = next((str(params.get(k)).strip() for k in (
-        "transaction_id", "transactionid", "transaction", "conversion_id", "conversion", "event_id", "event"
-    ) if params.get(k) not in (None, "")), "")
-    if not event_id:
-        fingerprint = "|".join(
-            str(params.get(k, "")) for k in ("subid", "sub_id", "sub", "user_id", "uid", "amount", "reward", "payout", "offer_id", "status")
-        )
-        event_id = "offerwallme:" + hashlib.sha256(fingerprint.encode()).hexdigest()
+    event_id = trans_id
+    existing = provider_events.find_one({"provider": "offerwallme", "event_id": event_id})
 
-    status = str(params.get("status") or params.get("event") or "approved").strip().lower()
-    if status in {"denied", "deny", "rejected", "reversed", "reverse", "chargeback", "charged_back"}:
-        existing = provider_events.find_one({"provider": "offerwallme", "event_id": event_id})
-        if existing:
+    # Offerwall.me status 2 is reserved for chargebacks/reversals.
+    if status == "2":
+        if not existing:
+            return {"ok": True, "message": "reversal_ignored_unknown_event"}
+        if existing.get("status") == "2" or existing.get("reversed_at"):
+            return {"ok": True, "message": "duplicate_reversal_ignored"}
+
+        points = int(existing.get("points") or 0)
+        if points > 0 and remove_balance(user_id, points):
             provider_events.update_one(
                 {"_id": existing["_id"]},
-                {"$set": {"status": status, "reversed_at": int(time.time())}},
+                {"$set": {"status": "2", "reversed_at": int(time.time())}},
             )
             return {"ok": True, "message": "reversal_recorded"}
-        return {"ok": True, "message": "reversal_ignored_unknown_event"}
+        return {"ok": False, "error": "reversal_credit_not_available"}
 
-    reward_raw = next((params.get(k) for k in ("amount", "reward", "payout") if params.get(k) not in (None, "")), None)
+    if status not in {"", "1"}:
+        return {"ok": True, "message": "ignored_status"}
+
+    if existing:
+        return {"ok": True, "message": "duplicate_ignored"}
+
     points = _offerwallme_reward_points(reward_raw)
     if points <= 0:
         return {"ok": False, "error": "invalid_reward"}
 
     event_doc = {
-        "provider": "offerwallme", "event_id": event_id, "user_id": user_id,
-        "reward_raw": str(reward_raw), "points": points, "status": status,
+        "provider": "offerwallme",
+        "event_id": event_id,
+        "user_id": user_id,
+        "reward_raw": str(reward_raw),
+        "points": points,
+        "status": "1",
         "received_at": int(time.time()),
         "params": {str(k): str(v) for k, v in params.items()},
     }
@@ -421,7 +420,6 @@ def _process_offerwallme_postback(params: Dict[str, Any]):
         logger.exception("Offerwall.me activity log failed | user=%s", user_id)
 
     return {"ok": True, "message": "credited", "provider": "offerwallme", "event_id": event_id, "user_id": user_id, "points": points}
-
 
 def process_postback(provider: str, params: Dict[str, Any]):
     provider = str(provider).lower().strip()
