@@ -298,14 +298,14 @@ async def shortlinks_page(
     else:
         text = (
             "🔗 **SHORTLINKS**\n\n"
-            "Complete an available shortlink to earn Points.\n"
-            "Rewards are credited only after verified provider completion."
+            "Open useful links through the configured shortlink provider.\n"
+            "Member points are not awarded for shortlink clicks."
         )
         rows = []
         for item in items:
             if shortlink_available(user.id, item["id"]):
                 rows.append([InlineKeyboardButton(
-                    f"🔗 {item['name']} • +{item['reward']} Points",
+                    f"🔗 {item['name']}",
                     callback_data=f"shortlink_{item['id']}",
                 )])
         if not rows:
@@ -400,17 +400,12 @@ async def shortlink_callback(
     await query.edit_message_text(
         "🔗 **SHORTLINK**\n\n"
         f"📌 {item['name']}\n\n"
-        f"💰 Reward: {item['reward']} Points\n\n"
-        "Open the shortlink and complete the provider steps.\n"
-        "Points are credited only after verified completion.",
+        "Open the shortlink and continue to the destination.\n"
+        "No member reward is attached to this link.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton(
                 "🚀 Open Shortlink",
                 url=url,
-            )],
-            [InlineKeyboardButton(
-                "✅ Verify",
-                callback_data=f"shortlink_verify_{shortlink_id}_{token}",
             )],
             [InlineKeyboardButton(
                 "🏠 Home",

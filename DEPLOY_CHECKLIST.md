@@ -13,3 +13,7 @@
 11. Configure ShrtFly/ShrinkMe using their current official API documentation.
 12. Do not credit users merely because they clicked a shortlink or pressed Verify.
 13. Test withdrawal/admin approval before public launch.
+
+
+### Task verification
+Task verification is OFF by default. Set Render environment variable `TASK_VERIFICATION_ENABLED=true` to enable configured verification checks; leave it `false` to allow admin-controlled task completion without automatic verification.

@@ -23,7 +23,9 @@ from premium import grant_premium, revoke_premium
 from vip import grant_vip, remove_vip, is_valid_vip_level
 
 from tasks import (
-    get_tasks, register_task, set_task_enabled, delete_task,
+    get_tasks, get_task, register_task, set_task_enabled, delete_task,
+    approve_task_completion, reject_task_completion,
+    completions_collection,
 )
 from referral import get_milestones, set_milestone, delete_milestone
 
@@ -119,6 +121,8 @@ def admin_menu():
                 callback_data="admin_rewards",
             )
         ],
+
+        [InlineKeyboardButton("📨 VIP Task Approvals", callback_data="admin_task_pending")],
 
         [
             InlineKeyboardButton(
@@ -1562,6 +1566,63 @@ async def admin_set_group(
 # TASK SETTINGS
 # ==================================================
 
+async def admin_task_pending(update, context):
+    query = update.callback_query
+    if not query or not admin_only(query.from_user.id):
+        if query: await query.answer("🚫 Admin only.", show_alert=True)
+        return
+    await query.answer()
+    pending = list(completions_collection.find({"status": "pending"}).sort("created_at", 1).limit(30))
+    buttons = []
+    lines = ["📨 **VIP TASK APPROVALS**", ""]
+    if not pending:
+        lines.append("No pending VIP task submissions.")
+    else:
+        lines.append(f"Pending: {len(pending)}")
+        lines.append("")
+        for item in pending:
+            uid = int(item.get("user_id", 0)); tid = str(item.get("task_id", ""))
+            task = get_task(tid) if 'get_task' in globals() else None
+            title = str(task.get("title", tid) if task else tid)[:32]
+            lines.append(f"👤 `{uid}` — {title}")
+            buttons.append([
+                InlineKeyboardButton("🟢 Approve", callback_data=f"admin_task_approve_{uid}_{tid}"),
+                InlineKeyboardButton("🔴 Reject", callback_data=f"admin_task_reject_{uid}_{tid}"),
+            ])
+    buttons.append([InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")])
+    await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+
+async def admin_task_approve(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id): return
+    raw = str(q.data).replace("admin_task_approve_", "", 1)
+    try: uid, tid = raw.split("_", 1); uid = int(uid)
+    except ValueError:
+        await q.answer("Invalid request.", show_alert=True); return
+    ok, msg = approve_task_completion(uid, tid, q.from_user.id)
+    await q.answer(msg, show_alert=not ok)
+    if ok:
+        try: await context.bot.send_message(uid, f"✅ **VIP Task Approved!**\n\n🎯 Task: {get_task(tid).get('title', tid)}\n💰 Reward credited successfully.", parse_mode="Markdown")
+        except Exception: pass
+    await admin_task_pending(update, context)
+
+
+async def admin_task_reject(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id): return
+    raw = str(q.data).replace("admin_task_reject_", "", 1)
+    try: uid, tid = raw.split("_", 1); uid = int(uid)
+    except ValueError:
+        await q.answer("Invalid request.", show_alert=True); return
+    ok, msg = reject_task_completion(uid, tid, q.from_user.id, "Rejected by Admin")
+    await q.answer(msg, show_alert=not ok)
+    if ok:
+        try: await context.bot.send_message(uid, f"❌ **VIP Task Rejected**\n\n🎯 Task: {get_task(tid).get('title', tid)}\nNo reward was credited.", parse_mode="Markdown")
+        except Exception: pass
+    await admin_task_pending(update, context)
+
+
 async def admin_tasks(update, context):
     query = update.callback_query
     if not query or not admin_only(query.from_user.id):
@@ -1597,7 +1658,7 @@ async def admin_add_task(update, context):
     await query.answer(); context.user_data["admin_action"]="add_task"
     await query.edit_message_text(
         "🎯 **ADD TASK**\n\nSend one line:\n`id|title|description|url|reward|cooldown|xp|energy|task_type|audience|verification`\n\n"
-        "Use `-` for no URL/description. Example:\n`task1|Join Channel|Join our channel|https://t.me/example|50|86400|5|1|telegram|normal|telegram_join`",
+        "Verification is controlled by Render ENV: `TASK_VERIFICATION_ENABLED=false` (default) or `true`.\nUse `-` for no URL/description. Example:\n`task1|Join Channel|Join our channel|https://t.me/example|50|86400|5|1|telegram|normal|telegram_join`",
         reply_markup=admin_back(), parse_mode="Markdown")
 
 async def admin_task_toggle(update, context):
@@ -2757,7 +2818,9 @@ async def admin_text_handler(
             sid, name, url, reward_text, cooldown_text, provider = parts
             provider = provider.lower() or "manual"
         try:
-            reward = int(reward_text)
+            # Shortlink providers used here monetize publisher traffic; member incentives
+            # for clicks are not assumed to be allowed. Keep member reward at zero.
+            reward = 0
             cooldown = int(cooldown_text)
         except ValueError:
             await update.message.reply_text("❌ Reward and cooldown must be numbers.", reply_markup=admin_back())
@@ -2785,7 +2848,7 @@ async def admin_text_handler(
         context.user_data.clear()
         await update.message.reply_text(
             f"✅ Shortlink `{sid}` saved ({provider}).\n\n"
-            + ("🔗 Provider API generated the short URL. Reward remains 0 because the documented API does not provide verified completion callbacks." if provider in {"shrtfly", "shrinkme"} else "🔗 Manual/provider URL saved."),
+            + "🔗 Member reward is disabled; use CPA/task systems for verified member earnings.",
             reply_markup=admin_back(),
             parse_mode="Markdown",
         )
@@ -3132,6 +3195,7 @@ async def admin_callback(
         "admin_stats": admin_statistics,
         "admin_rewards": admin_rewards,
         "admin_tasks": admin_tasks,
+        "admin_task_pending": admin_task_pending,
         "admin_membership_payments": admin_membership_payments,
         "admin_add_task": admin_add_task,
         "admin_wheel": admin_wheel,
@@ -3176,6 +3240,12 @@ async def admin_callback(
         return
     if data.startswith("admin_task_delete_"):
         await admin_task_delete(update, context)
+        return
+    if data.startswith("admin_task_approve_"):
+        await admin_task_approve(update, context)
+        return
+    if data.startswith("admin_task_reject_"):
+        await admin_task_reject(update, context)
         return
 
     handler = routes.get(data)

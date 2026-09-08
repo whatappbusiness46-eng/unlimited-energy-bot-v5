@@ -28,3 +28,7 @@ CPAGrip postback URL:
 `https://unlimited-energy-bot-v2-06pl.onrender.com/cpagrip/postback`
 
 Do not commit or paste secrets into source control or chat.
+
+
+### Task verification
+Task verification is OFF by default. Set Render environment variable `TASK_VERIFICATION_ENABLED=true` to enable configured verification checks; leave it `false` to allow admin-controlled task completion without automatic verification.

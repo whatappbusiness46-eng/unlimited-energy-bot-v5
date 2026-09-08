@@ -2,6 +2,7 @@
 # TASK SYSTEM - MongoDB backed, admin managed
 # ============================================================
 import logging
+import os
 import time
 from urllib.parse import urlparse
 from typing import Optional
@@ -14,6 +15,7 @@ from database import (
     db, users, get_user, update_user, add_balance, add_activity,
     get_membership_multiplier, use_energy, add_xp,
 )
+from config import ADMIN_ID
 
 logger = logging.getLogger(__name__)
 tasks_collection = db["tasks"]
@@ -23,6 +25,8 @@ DEFAULT_REWARD = 10
 DEFAULT_XP = 5
 DEFAULT_ENERGY = 1
 DEFAULT_VERIFICATION = "telegram_join"
+# Verification is disabled by default. Set TASK_VERIFICATION_ENABLED=true in Render to enable it.
+TASK_VERIFICATION_ENABLED = os.getenv("TASK_VERIFICATION_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _now():
@@ -92,7 +96,7 @@ def _normalise_verification(value, url=None):
     value = str(value or "").strip().lower()
     aliases = {"join": "telegram_join", "telegram": "telegram_join", "channel_join": "telegram_join"}
     value = aliases.get(value, value)
-    if value not in {"telegram_join", "manual"}:
+    if value not in {"telegram_join", "manual", "click_once"}:
         value = DEFAULT_VERIFICATION if url and "t.me/" in str(url) else "manual"
     return value
 
@@ -187,7 +191,8 @@ def task_available(user_id, task_id):
     if not user or user.get("banned") or user.get("blacklisted") or not task_visible(user_id, task):
         return False
     # Permanent completion wins over all cooldown logic.
-    if completions_collection.find_one({"user_id": int(user_id), "task_id": str(task_id), "status": "rewarded"}):
+    completion = completions_collection.find_one({"user_id": int(user_id), "task_id": str(task_id)})
+    if completion and completion.get("status") in {"rewarded", "pending"}:
         return False
     if str(task_id) in {str(x) for x in user.get("completed_tasks", [])}:
         return False
@@ -248,6 +253,90 @@ def _reserve_completion(user_id, task_id):
         return False, "error"
 
 
+def _vip_manual_review_required(user_id, task):
+    # VIP task claims are always admin-reviewed. For a BOTH task, only VIP users are reviewed.
+    audience = str(task.get("audience", "normal")).strip().lower()
+    return audience == "vip" or (audience == "both" and _is_vip(user_id))
+
+
+def _manual_reward(user_id, task):
+    reward = max(0, _safe_int(task.get("reward"), 0))
+    try:
+        reward = int(round(reward * max(1.0, float(get_membership_multiplier(user_id)))))
+    except Exception:
+        pass
+    return reward
+
+
+def request_vip_task_review(user_id, task_id):
+    user = get_user(user_id, create=False); task = get_task(task_id)
+    if not user or not task or user.get("banned") or user.get("blacklisted") or not task_visible(user_id, task):
+        return False, "Unavailable."
+    if not _vip_manual_review_required(user_id, task):
+        return False, "This task is auto-verified for Normal members."
+    if not task_available(user_id, task_id):
+        existing = completions_collection.find_one({"user_id": int(user_id), "task_id": str(task_id)})
+        if existing and existing.get("status") == "pending":
+            return False, "Your task is already waiting for Admin approval."
+        return False, "Task already completed."
+    reserved, state = _reserve_completion(user_id, task_id)
+    if not reserved:
+        return False, "Your task is already waiting for Admin approval." if state == "in_progress" else "Task already completed."
+    completions_collection.update_one(
+        {"user_id": int(user_id), "task_id": str(task_id)},
+        {"$set": {"status": "pending", "submitted_at": _now(), "reward_requested": _manual_reward(user_id, task)}}
+    )
+    return True, "Pending"
+
+
+def approve_task_completion(user_id, task_id, admin_id):
+    try:
+        if int(admin_id) != int(ADMIN_ID):
+            return False, "Admin only."
+    except Exception:
+        return False, "Admin only."
+    task = get_task(task_id); user = get_user(user_id, create=False)
+    if not task or not user:
+        return False, "Task or user not found."
+    record = completions_collection.find_one({"user_id": int(user_id), "task_id": str(task_id), "status": "pending"})
+    if not record:
+        return False, "No pending completion found."
+    reward = _manual_reward(user_id, task)
+    if reward:
+        add_balance(user_id, reward)
+    xp = _safe_int(task.get("xp"), 0)
+    if xp:
+        add_xp(user_id, xp)
+    now = _now()
+    user = get_user(user_id, create=False) or {}
+    history = _completed_map(user); history[str(task_id)] = now
+    completed = list({*map(str, user.get("completed_tasks", [])), str(task_id)})
+    count, reset = _daily_count(user)
+    update_user(user_id, {"task_history": history, "completed_tasks": completed, "daily_task_count": count + 1, "task_day_started": reset})
+    completions_collection.update_one({"_id": record["_id"], "status": "pending"}, {"$set": {"status": "rewarded", "reward": reward, "approved_at": now, "approved_by": int(admin_id)}})
+    try:
+        from referral import activate_referral
+        activate_referral(user_id, "task")
+    except Exception:
+        logger.exception("Referral activation hook failed")
+    try: add_activity(user_id, f"VIP task approved: {task.get('title')}", reward)
+    except Exception: pass
+    return True, f"Approved +{reward} Points"
+
+
+def reject_task_completion(user_id, task_id, admin_id, reason="Rejected"):
+    try:
+        if int(admin_id) != int(ADMIN_ID):
+            return False, "Admin only."
+    except Exception:
+        return False, "Admin only."
+    record = completions_collection.find_one({"user_id": int(user_id), "task_id": str(task_id), "status": "pending"})
+    if not record:
+        return False, "No pending completion found."
+    completions_collection.update_one({"_id": record["_id"], "status": "pending"}, {"$set": {"status": "rejected", "rejected_at": _now(), "rejected_by": int(admin_id), "reason": str(reason or "Rejected")[:300]}})
+    return True, "Rejected"
+
+
 def complete_task(user_id, task_id, bot=None):
     user = get_user(user_id, create=False); task = get_task(task_id)
     if not user or not task or user.get("banned") or user.get("blacklisted") or not task_visible(user_id, task):
@@ -255,6 +344,8 @@ def complete_task(user_id, task_id, bot=None):
     if not task_available(user_id, task_id):
         return False, "Task already completed."
 
+    if _vip_manual_review_required(user_id, task):
+        return request_vip_task_review(user_id, task_id)
     verification = _normalise_verification(task.get("verification_method"), task.get("url"))
     if verification == "telegram_join":
         if bot is None:
@@ -267,7 +358,7 @@ def complete_task(user_id, task_id, bot=None):
             return False, "Verification is temporarily unavailable."
         if not verified:
             return False, "Please complete the Telegram join task first."
-    elif verification == "manual":
+    elif TASK_VERIFICATION_ENABLED and verification == "manual":
         return False, "This task requires admin/provider verification and cannot be auto-verified."
 
     settings = db["bot_settings"].find_one({"_id": "main"}) or {}
@@ -309,10 +400,12 @@ async def complete_task_async(user_id, task_id, bot):
         return False, "Unavailable."
     if not task_available(user_id, task_id):
         return False, "Task already completed."
+    if _vip_manual_review_required(user_id, task):
+        return request_vip_task_review(user_id, task_id)
     verification = _normalise_verification(task.get("verification_method"), task.get("url"))
     if verification == "telegram_join" and not await _verify_telegram_join(bot, user_id, task.get("url")):
         return False, "Please complete the Telegram join task first."
-    if verification == "manual":
+    if TASK_VERIFICATION_ENABLED and verification == "manual":
         return False, "This task requires admin/provider verification and cannot be auto-verified."
     settings = db["bot_settings"].find_one({"_id": "main"}) or {}
     daily_limit = max(1, _safe_int(settings.get("daily_task_limit"), 20))
@@ -359,10 +452,25 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db_user or db_user.get("banned") or db_user.get("blacklisted"):
         await message.reply_text("🚫 Your account is restricted."); return
     task_list=get_tasks(user_id=user.id); count,_=_daily_count(db_user); settings=db["bot_settings"].find_one({"_id":"main"}) or {}; limit=max(1,_safe_int(settings.get("daily_task_limit"),20))
-    if not task_list: text="📋 **TASK CENTER**\n\nNo tasks are available for your membership right now."
+    normal=[t for t in task_list if t.get("audience","normal") in {"normal","both"}]
+    vip=[t for t in task_list if t.get("audience","normal") in {"vip","both"}]
+    if not task_list:
+        text="📋 **TASK CENTER**\n\nNo tasks are available for your membership right now."
     else:
-        lines=["📋 **TASK CENTER**", "", f"📊 Daily Tasks: {count}/{limit}", "", "Complete an available task:"]
-        for t in task_list: lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {t['title']} — +{t.get('reward',0)} Points")
+        lines=["📋 **TASK CENTER**", "", f"📊 Daily Tasks: {count}/{limit}", ""]
+        if normal:
+            lines += ["🟢 **NORMAL TASKS**"]
+            for t in normal:
+                lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {t['title']} — +{t.get('reward',0)} Points")
+            lines.append("")
+        if _is_vip(user.id) and vip:
+            lines += ["💎 **VIP TASKS**"]
+            for t in vip:
+                lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {t['title']} — +{t.get('reward',0)} Points")
+        lines.append("")
+        lines.append("Complete each available task once. Rewards are permanent and cannot be claimed again.")
+        lines.append("")
+        lines.append("For click-only tasks, Telegram cannot prove that the URL was actually opened; the Claim button records one completion per user. Do not use click-only rewards for ad-provider links unless that provider explicitly permits incentivized traffic.")
         text="\n".join(lines)
     await message.reply_text(text, reply_markup=tasks_menu(user.id), parse_mode="Markdown")
 
@@ -374,8 +482,12 @@ async def task_callback(update, context):
     if not task or not task_visible(q.from_user.id, task): await q.edit_message_text("⚠️ Task not found or unavailable."); return
     buttons=[]
     if task.get("url"): buttons.append([InlineKeyboardButton("🚀 Open Task", url=task["url"])])
-    if task.get("verification_method", DEFAULT_VERIFICATION) == "telegram_join":
-        buttons.append([InlineKeyboardButton("✅ Verify Task", callback_data=f"task_complete_{tid}")])
+    verification = _normalise_verification(task.get("verification_method"), task.get("url"))
+    if _vip_manual_review_required(q.from_user.id, task):
+        buttons.append([InlineKeyboardButton("📨 Submit for Admin Approval", callback_data=f"task_complete_{tid}")])
+    elif verification in {"telegram_join", "click_once"}:
+        label = "🎁 Claim 10 Points" if verification == "click_once" else "✅ Verify Task"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"task_complete_{tid}")])
     buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
     audience = str(task.get("audience", "normal")).upper()
     await q.edit_message_text(f"🎯 **{task['title']}**\n\n{task.get('description','')}\n\n💰 Reward: {task.get('reward',0)} Points\n🏷 Audience: {audience}\n🔐 Verification: {task.get('verification_method','telegram_join')}", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
@@ -387,8 +499,12 @@ async def task_complete_callback(update, context):
     await q.answer(); tid=str(q.data)[len("task_complete_"):]; task=get_task(tid)
     if not task: await q.edit_message_text("⚠️ Task not found."); return
     ok,msg=await complete_task_async(q.from_user.id,tid,context.bot)
-    await q.edit_message_text((f"🎉 **TASK COMPLETED!**\n\n🎯 {task['title']}\n💰 Reward credited successfully." if ok else f"❌ **Task not completed**\n\n{msg}"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks",callback_data="tasks")],[InlineKeyboardButton("🏠 Home",callback_data="home")]]), parse_mode="Markdown")
+    if ok and _vip_manual_review_required(q.from_user.id, task):
+        text = f"📨 **TASK SUBMITTED**\n\n🎯 {task['title']}\n\nYour VIP task has been sent to Admin for approval.\n💰 Reward will be credited after approval."
+    else:
+        text = f"🎉 **TASK COMPLETED!**\n\n🎯 {task['title']}\n💰 Reward credited successfully." if ok else f"❌ **Task not completed**\n\n{msg}"
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks",callback_data="tasks")],[InlineKeyboardButton("🏠 Home",callback_data="home")]]), parse_mode="Markdown")
 
 
 HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback}
-__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","tasks_menu","tasks_page","task_callback","task_complete_callback","HANDLER_FUNCTIONS","ensure_task_indexes"]
+__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","HANDLER_FUNCTIONS","ensure_task_indexes"]

@@ -33,3 +33,6 @@ Set the variables from `.env.example`. Never commit real tokens or API keys.
 
 Use HTTPS and the exact provider postback URL shown in your provider dashboard.
 \n\n### Deployment hotfix\n- Premium/VIP admin toggle persistence is resilient to callback acknowledgement.\n- Task index initialization safely handles an existing differently named `id` index.\n
+
+### Task verification
+Task verification is OFF by default. Set Render environment variable `TASK_VERIFICATION_ENABLED=true` to enable configured verification checks; leave it `false` to allow admin-controlled task completion without automatic verification.
