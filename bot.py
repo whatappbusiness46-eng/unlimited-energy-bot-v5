@@ -90,7 +90,17 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Unlimited Energy Bot is running."
+    return """<!doctype html>
+<html lang="en">
+<head>
+    <meta name="offerwall-verification" content="6aa07179373d65cfef066691">
+    <meta charset="utf-8">
+    <title>Unlimited Energy Bot</title>
+</head>
+<body>
+    Unlimited Energy Bot is running.
+</body>
+</html>"""
 
 
 @app.route("/health")
