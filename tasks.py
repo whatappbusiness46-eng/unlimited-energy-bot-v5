@@ -18,6 +18,13 @@ from database import (
 from config import ADMIN_ID
 
 logger = logging.getLogger(__name__)
+
+
+def _md(value):
+    """Escape Telegram Markdown v1 special characters in dynamic task content."""
+    text = "" if value is None else str(value)
+    return text.replace("\\", "\\\\").replace("*", "\\*").replace("_", "\\_").replace("`", "\\`").replace("[", "\\[")
+
 tasks_collection = db["tasks"]
 completions_collection = db["task_completions"]
 TASK_COOLDOWN = 86400
@@ -466,7 +473,7 @@ def tasks_menu(user_id=None):
     buttons=[]
     for task in get_tasks(user_id=user_id):
         available = task_available(user_id, task["id"]) if user_id else True
-        buttons.append([InlineKeyboardButton(f"{'🎯' if available else '✅'} {task['title']} (+{task.get('reward',0)})", callback_data=f"task_{task['id']}")])
+        buttons.append([InlineKeyboardButton(f"{'🎯' if available else '✅'} {_md(task.get('title',''))} (+{_safe_int(task.get('reward'),0)})", callback_data=f"task_{task['id']}")])
     buttons.append([InlineKeyboardButton("🏠 Home", callback_data="home")])
     return InlineKeyboardMarkup(buttons)
 
@@ -487,12 +494,12 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if normal:
             lines += ["🟢 **NORMAL TASKS**"]
             for t in normal:
-                lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {t['title']} — +{t.get('reward',0)} Points")
+                lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {_md(t.get('title',''))} — +{_safe_int(t.get('reward'),0)} Points")
             lines.append("")
         if _is_vip(user.id) and vip:
             lines += ["💎 **VIP TASKS**"]
             for t in vip:
-                lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {t['title']} — +{t.get('reward',0)} Points")
+                lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {_md(t.get('title',''))} — +{_safe_int(t.get('reward'),0)} Points")
         lines.append("")
         lines.append("Complete each available task once. Rewards are permanent and cannot be claimed again.")
         lines.append("")
@@ -516,7 +523,7 @@ async def task_callback(update, context):
         buttons.append([InlineKeyboardButton(label, callback_data=f"task_complete_{tid}")])
     buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
     audience = str(task.get("audience", "normal")).upper()
-    await q.edit_message_text(f"🎯 **{task['title']}**\n\n{task.get('description','')}\n\n💰 Reward: {task.get('reward',0)} Points\n🏷 Audience: {audience}\n🔐 Verification: {task.get('verification_method','telegram_join')}", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    await q.edit_message_text(f"🎯 **{_md(task.get('title',''))}**\n\n{_md(task.get('description',''))}\n\n💰 Reward: {_safe_int(task.get('reward'),0)} Points\n🏷 Audience: {_md(audience)}\n🔐 Verification: {_md(task.get('verification_method','telegram_join'))}", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 
 async def task_complete_callback(update, context):
@@ -526,9 +533,9 @@ async def task_complete_callback(update, context):
     if not task: await q.edit_message_text("⚠️ Task not found."); return
     ok,msg=await complete_task_async(q.from_user.id,tid,context.bot)
     if ok and _vip_manual_review_required(q.from_user.id, task):
-        text = f"📨 **TASK SUBMITTED**\n\n🎯 {task['title']}\n\nYour VIP task has been sent to Admin for approval.\n💰 Reward will be credited after approval."
+        text = f"📨 **TASK SUBMITTED**\n\n🎯 {_md(task.get('title',''))}\n\nYour VIP task has been sent to Admin for approval.\n💰 Reward will be credited after approval."
     else:
-        text = f"🎉 **TASK COMPLETED!**\n\n🎯 {task['title']}\n💰 Reward credited successfully." if ok else f"❌ **Task not completed**\n\n{msg}"
+        text = f"🎉 **TASK COMPLETED!**\n\n🎯 {_md(task.get('title',''))}\n💰 Reward credited successfully." if ok else f"❌ **Task not completed**\n\n{msg}"
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks",callback_data="tasks")],[InlineKeyboardButton("🏠 Home",callback_data="home")]]), parse_mode="Markdown")
 
 
