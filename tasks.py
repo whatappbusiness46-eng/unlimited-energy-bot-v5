@@ -9,6 +9,7 @@ from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from telegram.helpers import escape_markdown
 from pymongo.errors import DuplicateKeyError
 
 from database import (
@@ -38,6 +39,11 @@ def _safe_int(v, d=0):
         return int(v)
     except (TypeError, ValueError):
         return d
+
+
+def _md(text):
+    """Escape dynamic task text before inserting it into legacy Telegram Markdown."""
+    return escape_markdown(str(text or ""), version=1)
 
 
 def _ensure_named_index(collection, keys, *, unique=False, name=None):
@@ -461,12 +467,12 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if normal:
             lines += ["🟢 **NORMAL TASKS**"]
             for t in normal:
-                lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {t['title']} — +{t.get('reward',0)} Points")
+                lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {_md(t['title'])} — +{t.get('reward',0)} Points")
             lines.append("")
         if _is_vip(user.id) and vip:
             lines += ["💎 **VIP TASKS**"]
             for t in vip:
-                lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {t['title']} — +{t.get('reward',0)} Points")
+                lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {_md(t['title'])} — +{t.get('reward',0)} Points")
         lines.append("")
         lines.append("Complete each available task once. Rewards are permanent and cannot be claimed again.")
         lines.append("")
@@ -490,7 +496,7 @@ async def task_callback(update, context):
         buttons.append([InlineKeyboardButton(label, callback_data=f"task_complete_{tid}")])
     buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
     audience = str(task.get("audience", "normal")).upper()
-    await q.edit_message_text(f"🎯 **{task['title']}**\n\n{task.get('description','')}\n\n💰 Reward: {task.get('reward',0)} Points\n🏷 Audience: {audience}\n🔐 Verification: {task.get('verification_method','telegram_join')}", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    await q.edit_message_text(f"🎯 **{_md(task['title'])}**\n\n{_md(task.get('description',''))}\n\n💰 Reward: {task.get('reward',0)} Points\n🏷 Audience: {_md(audience)}\n🔐 Verification: {_md(task.get('verification_method','telegram_join'))}", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 
 async def task_complete_callback(update, context):
@@ -500,9 +506,9 @@ async def task_complete_callback(update, context):
     if not task: await q.edit_message_text("⚠️ Task not found."); return
     ok,msg=await complete_task_async(q.from_user.id,tid,context.bot)
     if ok and _vip_manual_review_required(q.from_user.id, task):
-        text = f"📨 **TASK SUBMITTED**\n\n🎯 {task['title']}\n\nYour VIP task has been sent to Admin for approval.\n💰 Reward will be credited after approval."
+        text = f"📨 **TASK SUBMITTED**\n\n🎯 {_md(task['title'])}\n\nYour VIP task has been sent to Admin for approval.\n💰 Reward will be credited after approval."
     else:
-        text = f"🎉 **TASK COMPLETED!**\n\n🎯 {task['title']}\n💰 Reward credited successfully." if ok else f"❌ **Task not completed**\n\n{msg}"
+        text = f"🎉 **TASK COMPLETED!**\n\n🎯 {_md(task['title'])}\n💰 Reward credited successfully." if ok else f"❌ **Task not completed**\n\n{_md(msg)}"
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks",callback_data="tasks")],[InlineKeyboardButton("🏠 Home",callback_data="home")]]), parse_mode="Markdown")
 
 
