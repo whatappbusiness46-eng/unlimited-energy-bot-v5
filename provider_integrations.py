@@ -289,8 +289,144 @@ def _verify_postback(provider: str, params: Dict[str, Any]) -> bool:
     return bool(supplied) and hmac.compare_digest(supplied, secret)
 
 
+def _offerwallme_reward_points(reward_raw: Any) -> int:
+    """Convert Offerwall.me payout to the configured member reward.
+
+    Offerwall.me's Amount is treated as USD payout. The member receives only
+    OFFERWALLME_USER_REWARD_PERCENT of that amount, converted by
+    OFFERWALLME_POINTS_PER_USD. Provider payout is never shown as member pay.
+    """
+    try:
+        reward = Decimal(str(reward_raw))
+        share = Decimal(_env("OFFERWALLME_USER_REWARD_PERCENT", "40"))
+        rate = Decimal(_env("OFFERWALLME_POINTS_PER_USD", "1000"))
+        if reward <= 0 or share <= 0 or rate <= 0:
+            return 0
+        points = int((reward * share / Decimal("100") * rate).quantize(Decimal("1")))
+        return max(1, points)
+    except (InvalidOperation, ValueError, TypeError):
+        return 0
+
+
+def _offerwallme_signature_valid(params: Dict[str, Any]) -> bool:
+    """Validate Offerwall.me postback authentication without trusting client data.
+
+    We support the common password/token form and HMAC-SHA256 signatures. The
+    exact provider dashboard secret remains server-side. If Offerwall.me uses
+    another documented signature scheme for this account, it can be added here
+    without weakening the fail-closed behavior.
+    """
+    secret = _env("OFFERWALLME_POSTBACK_SECRET")
+    if not secret:
+        return False
+
+    supplied = str(
+        params.get("password") or params.get("secret") or
+        params.get("token") or params.get("signature") or
+        params.get("sign") or params.get("hash") or ""
+    ).strip()
+    if not supplied:
+        return False
+
+    # Some publisher configurations send the private secret directly.
+    if hmac.compare_digest(supplied, secret):
+        return True
+
+    signature_fields = {"signature", "sign", "hash"}
+    supplied_is_signature = any(str(params.get(k) or "").strip() == supplied for k in signature_fields)
+    if not supplied_is_signature:
+        return False
+
+    # Canonical query-string HMAC, excluding authentication fields.
+    canonical = "&".join(
+        f"{k}={params[k]}" for k in sorted(params)
+        if k not in {"signature", "sign", "hash", "password", "secret", "token"}
+    )
+    candidates = (
+        hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest(),
+        hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).digest().hex(),
+    )
+    return any(hmac.compare_digest(supplied.lower(), c.lower()) for c in candidates)
+
+
+def _process_offerwallme_postback(params: Dict[str, Any]):
+    if not _enabled("offerwallme"):
+        return {"ok": False, "error": "provider_disabled"}
+    if not _env("OFFERWALLME_POSTBACK_SECRET"):
+        return {"ok": False, "error": "missing_postback_secret"}
+
+    user_raw = next((params.get(k) for k in ("subid", "sub_id", "sub", "user_id", "uid") if params.get(k) not in (None, "")), None)
+    if user_raw in (None, ""):
+        return {"ok": False, "error": "missing_user"}
+    try:
+        user_id = int(str(user_raw).strip())
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invalid_user_id"}
+    if not get_user(user_id, create=False):
+        return {"ok": False, "error": "user_not_found"}
+
+    if not _offerwallme_signature_valid(params):
+        return {"ok": False, "error": "invalid_signature"}
+
+    event_id = next((str(params.get(k)).strip() for k in (
+        "transaction_id", "transactionid", "transaction", "conversion_id", "conversion", "event_id", "event"
+    ) if params.get(k) not in (None, "")), "")
+    if not event_id:
+        fingerprint = "|".join(
+            str(params.get(k, "")) for k in ("subid", "sub_id", "sub", "user_id", "uid", "amount", "reward", "payout", "offer_id", "status")
+        )
+        event_id = "offerwallme:" + hashlib.sha256(fingerprint.encode()).hexdigest()
+
+    status = str(params.get("status") or params.get("event") or "approved").strip().lower()
+    if status in {"denied", "deny", "rejected", "reversed", "reverse", "chargeback", "charged_back"}:
+        existing = provider_events.find_one({"provider": "offerwallme", "event_id": event_id})
+        if existing:
+            provider_events.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {"status": status, "reversed_at": int(time.time())}},
+            )
+            return {"ok": True, "message": "reversal_recorded"}
+        return {"ok": True, "message": "reversal_ignored_unknown_event"}
+
+    reward_raw = next((params.get(k) for k in ("amount", "reward", "payout") if params.get(k) not in (None, "")), None)
+    points = _offerwallme_reward_points(reward_raw)
+    if points <= 0:
+        return {"ok": False, "error": "invalid_reward"}
+
+    event_doc = {
+        "provider": "offerwallme", "event_id": event_id, "user_id": user_id,
+        "reward_raw": str(reward_raw), "points": points, "status": status,
+        "received_at": int(time.time()),
+        "params": {str(k): str(v) for k, v in params.items()},
+    }
+    try:
+        provider_events.insert_one(event_doc)
+    except Exception as exc:
+        if "duplicate" in str(exc).lower() or "e11000" in str(exc).lower():
+            return {"ok": True, "message": "duplicate_ignored"}
+        logger.exception("Offerwall.me event insert failed")
+        return {"ok": False, "error": "event_store_failed"}
+
+    if not add_balance(user_id, points):
+        provider_events.delete_one({"provider": "offerwallme", "event_id": event_id})
+        return {"ok": False, "error": "credit_failed"}
+
+    try:
+        record_transaction(user_id, points, "offerwallme_conversion", event_id)
+    except Exception:
+        logger.exception("Offerwall.me transaction record failed | event=%s", event_id)
+    try:
+        add_activity(user_id, "💸 Offerwall.me conversion", points)
+    except Exception:
+        logger.exception("Offerwall.me activity log failed | user=%s", user_id)
+
+    return {"ok": True, "message": "credited", "provider": "offerwallme", "event_id": event_id, "user_id": user_id, "points": points}
+
+
 def process_postback(provider: str, params: Dict[str, Any]):
     provider = str(provider).lower().strip()
+    if provider == "offerwallme":
+        return _process_offerwallme_postback(params)
     if provider != "cpagrip" or not _enabled("cpagrip"):
         return {"ok": False, "error": "provider_disabled"}
 
@@ -305,9 +441,6 @@ def process_postback(provider: str, params: Dict[str, Any]):
     if user_raw in (None, ""):
         return {"ok": False, "error": "missing_user"}
     if not event_id:
-        # CPAGrip's documented Global Postback fields do not include a
-        # transaction/event id. A deterministic fingerprint makes retries of
-        # the same callback idempotent without inventing a provider id.
         fingerprint = "|".join([
             str(params.get("tracking_id", "")),
             str(params.get("offer_id", "")),
@@ -320,34 +453,20 @@ def process_postback(provider: str, params: Dict[str, Any]):
         user_id = int(str(user_raw))
     except (TypeError, ValueError):
         return {"ok": False, "error": "invalid_user_id"}
-
     if not get_user(user_id, create=False):
         return {"ok": False, "error": "user_not_found"}
-
     if not _verify_postback(provider, params):
         return {"ok": False, "error": "invalid_signature"}
-
     if status in {"reversed", "chargeback", "reject", "rejected"}:
         existing = provider_events.find_one({"provider": provider, "event_id": event_id})
         if not existing:
             return {"ok": True, "message": "reversal_ignored_unknown_event"}
-        provider_events.update_one(
-            {"_id": existing["_id"]},
-            {"$set": {"status": status, "reversed_at": int(time.time())}},
-        )
+        provider_events.update_one({"_id": existing["_id"]}, {"$set": {"status": status, "reversed_at": int(time.time())}})
         return {"ok": True, "message": "reversal_recorded"}
-
     points = _reward_points(reward_raw)
     if points <= 0:
         return {"ok": False, "error": "invalid_reward"}
-
-    event_doc = {
-        "provider": provider, "event_id": event_id, "user_id": user_id,
-        "reward_raw": str(reward_raw), "points": points, "status": status,
-        "received_at": int(time.time()),
-        "params": {str(k): str(v) for k, v in params.items()},
-    }
-
+    event_doc = {"provider": provider, "event_id": event_id, "user_id": user_id, "reward_raw": str(reward_raw), "points": points, "status": status, "received_at": int(time.time()), "params": {str(k): str(v) for k, v in params.items()}}
     try:
         provider_events.insert_one(event_doc)
     except Exception as exc:
@@ -355,11 +474,9 @@ def process_postback(provider: str, params: Dict[str, Any]):
             return {"ok": True, "message": "duplicate_ignored"}
         logger.exception("Provider event insert failed")
         return {"ok": False, "error": "event_store_failed"}
-
     if not add_balance(user_id, points):
         provider_events.delete_one({"provider": provider, "event_id": event_id})
         return {"ok": False, "error": "credit_failed"}
-
     try:
         record_transaction(user_id, points, "cpagrip_conversion", event_id)
     except Exception:
@@ -368,9 +485,7 @@ def process_postback(provider: str, params: Dict[str, Any]):
         add_activity(user_id, "💸 CPAGrip conversion", points)
     except Exception:
         logger.exception("Activity log failed | user=%s", user_id)
-
-    return {"ok": True, "message": "credited", "provider": provider,
-            "event_id": event_id, "user_id": user_id, "points": points}
+    return {"ok": True, "message": "credited", "provider": provider, "event_id": event_id, "user_id": user_id, "points": points}
 
 
 
@@ -432,5 +547,9 @@ def provider_status():
     return {
         "cpagrip": _enabled("cpagrip") and bool(_env("CPAGRIP_OFFERS_API_URL")),
         "cpagrip_postback": bool(_env("CPAGRIP_POSTBACK_PASSWORD") or _env("CPAGRIP_POSTBACK_SECRET")),
+        "offerwallme": _enabled("offerwallme"),
+        "offerwallme_postback": bool(_env("OFFERWALLME_POSTBACK_SECRET")),
+        "offerwallme_points_per_usd": _env("OFFERWALLME_POINTS_PER_USD", "1000"),
+        "offerwallme_user_reward_percent": _env("OFFERWALLME_USER_REWARD_PERCENT", "40"),
         "reward_points_per_usd": _env("REWARD_POINTS_PER_USD", "1000"),
     }

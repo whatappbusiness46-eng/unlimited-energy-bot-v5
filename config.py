@@ -430,3 +430,10 @@ SHRINKME_API_URL = os.getenv("SHRINKME_API_URL", "")
 CONFIG_READY = True
 
 CPAGRIP_USER_REWARD_PERCENT = float(os.getenv("CPAGRIP_USER_REWARD_PERCENT", "40"))
+
+# Offerwall.me publisher postback integration.
+# The private secret must stay server-side in Render Environment Variables.
+OFFERWALLME_ENABLED = os.getenv("OFFERWALLME_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+OFFERWALLME_POSTBACK_SECRET = os.getenv("OFFERWALLME_POSTBACK_SECRET", "").strip()
+OFFERWALLME_USER_REWARD_PERCENT = float(os.getenv("OFFERWALLME_USER_REWARD_PERCENT", "40"))
+OFFERWALLME_POINTS_PER_USD = float(os.getenv("OFFERWALLME_POINTS_PER_USD", "1000"))

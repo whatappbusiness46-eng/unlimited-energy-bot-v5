@@ -25,7 +25,7 @@ Required Render variables:
 - SHRINKME_API_URL=https://shrinkme.io/api
 
 CPAGrip postback URL:
-`https://unlimited-energy-bot-v2-06pl.onrender.com/cpagrip/postback`
+`https://unlimited-energy-bot-v5.onrender.com/cpagrip/postback`
 
 Do not commit or paste secrets into source control or chat.
 
