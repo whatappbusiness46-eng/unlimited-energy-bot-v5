@@ -250,6 +250,7 @@ def submit_offerwallme_task_proof(user_id: int, task_id: str, proof: str):
         return {"ok": False, "error": "missing_offerwallme_credentials"}
 
     endpoint = _env("OFFERWALLME_TASK_SUBMIT_API_URL", "https://offerwall.me/tasksubmit.php")
+    proof_value = str(proof or "").strip()
     params = {
         "api": api_key,
         "id": str(user_id),
@@ -257,8 +258,15 @@ def submit_offerwallme_task_proof(user_id: int, task_id: str, proof: str):
         "token": bearer,
         "country": _env("OFFERWALLME_COUNTRY", "BD").upper(),
         "task_id": str(task_id),
-        "proof": str(proof or ""),
+        "proof": proof_value,
     }
+    # Keep the canonical fields above and also expose the proof URL separately
+    # when the Telegram image resolver produced one. This is harmless for PHP
+    # endpoints that ignore unknown POST fields and lets providers that expect
+    # a URL consume the image proof directly.
+    if proof_value.startswith("proof_url:"):
+        params["proof_url"] = proof_value.split(":", 1)[1].strip()
+        params["proof_type"] = "image"
 
     try:
         payload = _offerwallme_form_request(endpoint, params)
@@ -543,14 +551,18 @@ def _offerwallme_reward_points(reward_raw: Any, user_id: int = None) -> int:
     try:
         reward = Decimal(str(reward_raw))
         share = Decimal(_env("OFFERWALLME_USER_REWARD_PERCENT", "40"))
-        # The current Offerwall.me placement currency is Points. Treat the
-        # postback `reward` as placement points directly; never multiply it
-        # by a points-per-USD rate. This prevents a value such as 246 Points
-        # from being misread as $246 (which would incorrectly become 49,200
-        # points before the member share).
+        unit = _env("OFFERWALLME_REWARD_UNIT", "points").lower()
+        rate = Decimal(_env("OFFERWALLME_POINTS_PER_USD", "1000"))
         if reward <= 0 or share <= 0:
             return 0
-        base_points = reward
+
+        if unit in {"usd", "dollar", "dollars"}:
+            if rate <= 0:
+                return 0
+            base_points = reward * rate
+        else:
+            # Offerwall.me placement currency is Points by default.
+            base_points = reward
 
         points = int((base_points * share / Decimal("100")).quantize(Decimal("1")))
         if user_id is not None:

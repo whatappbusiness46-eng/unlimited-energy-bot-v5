@@ -635,7 +635,17 @@ async def offerwallme_proof_message_handler(update, context):
     if message.photo:
         photo = message.photo[-1]
         caption = str(message.caption or "").strip()
+        # Offerwall.me cannot fetch a Telegram file_id directly. Resolve the
+        # photo to Telegram's HTTPS file URL before submitting proof.
         proof = f"telegram_photo_file_id:{photo.file_id}"
+        try:
+            tg_file = await context.bot.get_file(photo.file_id)
+            file_path = str(getattr(tg_file, "file_path", "") or "").strip()
+            bot_token = os.getenv("BOT_TOKEN", "").strip()
+            if file_path and bot_token:
+                proof = f"proof_url:https://api.telegram.org/file/bot{bot_token}/{file_path}"
+        except Exception:
+            logger.exception("Could not resolve Telegram proof image | user=%s task=%s", update.effective_user.id, task_id)
         if caption:
             proof += f"\ncaption:{caption}"
     else:
