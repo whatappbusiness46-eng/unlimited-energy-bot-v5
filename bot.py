@@ -73,6 +73,54 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
+# RENDER KEEP-ALIVE
+# ============================================================
+# Render Free services may spin down after inactivity. Ping the public
+# health endpoint before the 15-minute idle window.
+# Set KEEPALIVE_URL in Render ENV to your public Render URL if needed.
+KEEPALIVE_URL = (
+    os.getenv("KEEPALIVE_URL", "https://unlimited-energy-bot-v5.onrender.com").strip().rstrip("/")
+    or os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    or os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+)
+KEEPALIVE_INTERVAL_SECONDS = 14 * 60
+
+
+def keepalive_loop():
+    if not KEEPALIVE_URL:
+        logger.warning("Keep-alive disabled: no public URL configured.")
+        return
+
+    health_url = KEEPALIVE_URL + "/health"
+    logger.info(
+        "Render keep-alive enabled: %s (every %s seconds)",
+        health_url,
+        KEEPALIVE_INTERVAL_SECONDS,
+    )
+
+    threading.Event().wait(30)
+
+    while True:
+        try:
+            from urllib.request import Request, urlopen
+
+            request = Request(
+                health_url,
+                headers={
+                    "User-Agent": "UnlimitedEnergyBot-KeepAlive/1.0"
+                },
+            )
+
+            with urlopen(request, timeout=15) as response:
+                logger.info("Keep-alive ping: HTTP %s", response.status)
+
+        except Exception as exc:
+            logger.warning("Keep-alive ping failed: %s", exc)
+
+        threading.Event().wait(KEEPALIVE_INTERVAL_SECONDS)
+
+
+# ============================================================
 # ENVIRONMENT VALIDATION
 # ============================================================
 
@@ -385,6 +433,13 @@ if __name__ == "__main__":
     )
 
     web_thread.start()
+
+    keepalive_thread = threading.Thread(
+        target=keepalive_loop,
+        name="render-keepalive",
+        daemon=True,
+    )
+    keepalive_thread.start()
 
     logger.info(
         "Flask health server started."
