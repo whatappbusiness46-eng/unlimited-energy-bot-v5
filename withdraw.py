@@ -5,7 +5,13 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config import MIN_WITHDRAW
-from database import get_user, reserve_withdrawal, get_withdrawals
+from database import (
+    get_user,
+    reserve_withdrawal,
+    get_withdrawals,
+    get_withdrawal_settings,
+    points_to_bdt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +57,23 @@ def _safe_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _withdraw_settings():
+    try:
+        return get_withdrawal_settings()
+    except Exception:
+        logger.exception("Failed to load withdrawal settings")
+        return {
+            "points_per_100_bdt": 1000,
+            "min_points": MIN_WITHDRAW,
+            "step_points": 500,
+        }
+
+
+def _bdt_text(points, rate=None):
+    value = points_to_bdt(points, rate)
+    return f"৳{value:,.2f}" if value % 1 else f"৳{value:,.0f}"
 
 
 def _get_user(user_id):
@@ -139,13 +162,19 @@ async def withdraw_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     balance = max(0, _safe_int(user.get("balance", 0)))
     pending = max(0, _safe_int(user.get("withdraw_pending", 0)))
+    settings = _withdraw_settings()
+    minimum = settings["min_points"]
+    rate = settings["points_per_100_bdt"]
+    step = settings["step_points"]
 
     await query.answer()
     await query.edit_message_text(
         "💸 **WITHDRAWAL CENTER**\n\n"
         f"💰 Available: {balance} Points\n"
         f"🟡 Pending: {pending} Points\n"
-        f"📌 Minimum: {MIN_WITHDRAW} Points\n\n"
+        f"📌 Minimum: {minimum} Points = {_bdt_text(minimum, rate)}\n"
+        f"💱 Rate: {rate} Points = ৳100\n"
+        f"🔢 Withdrawal step: {step} Points\n\n"
         "Select your payment method:",
         reply_markup=withdraw_keyboard(),
         parse_mode="Markdown",
@@ -167,10 +196,15 @@ async def select_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("🚫 Your account is restricted.", show_alert=True)
         return
 
+    settings = _withdraw_settings()
+    minimum = settings["min_points"]
+    rate = settings["points_per_100_bdt"]
+    step = settings["step_points"]
+
     balance = max(0, _safe_int(user.get("balance", 0)))
-    if balance < MIN_WITHDRAW:
+    if balance < minimum:
         await query.answer(
-            f"Minimum withdrawal is {MIN_WITHDRAW} points.",
+            f"Minimum withdrawal is {minimum} points.",
             show_alert=True,
         )
         return
@@ -183,9 +217,12 @@ async def select_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         "💸 **WITHDRAWAL AMOUNT**\n\n"
         f"💰 Available: {balance} Points\n"
-        f"📌 Minimum: {MIN_WITHDRAW} Points\n\n"
+        f"📌 Minimum: {minimum} Points = {_bdt_text(minimum, rate)}\n"
+        f"💱 Rate: {rate} Points = ৳100\n"
+        f"🔢 Amount must be in {step}-point steps (1000, 1500, 2000, 2500...)\n\n"
         "Send the amount you want to withdraw.\n\n"
-        "Example: `1000`",
+        "Example: `1000` = ৳100\n"
+        "Example: `1500` = ৳150",
         reply_markup=cancel_keyboard(),
         parse_mode="Markdown",
     )
@@ -220,9 +257,24 @@ async def withdraw_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return True
 
-        if amount < MIN_WITHDRAW:
+        settings = _withdraw_settings()
+        minimum = settings["min_points"]
+        rate = settings["points_per_100_bdt"]
+        step = settings["step_points"]
+
+        if amount < minimum:
             await message.reply_text(
-                f"❌ Minimum withdrawal is {MIN_WITHDRAW} points.",
+                f"❌ Minimum withdrawal is {minimum} points = {_bdt_text(minimum, rate)}.",
+                reply_markup=cancel_keyboard(),
+            )
+            return True
+
+        if amount % step != 0:
+            await message.reply_text(
+                f"❌ Invalid withdrawal amount. Use {step}-point steps only.\n\n"
+                "Examples: 1000, 1500, 2000, 2500...\n"
+                "1000 Points = ৳100\n"
+                "1500 Points = ৳150",
                 reply_markup=cancel_keyboard(),
             )
             return True
@@ -272,7 +324,11 @@ async def withdraw_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             return True
 
         amount = _safe_int(context.user_data.get("withdraw_amount", 0))
-        if amount < MIN_WITHDRAW:
+        settings = _withdraw_settings()
+        minimum = settings["min_points"]
+        rate = settings["points_per_100_bdt"]
+        step = settings["step_points"]
+        if amount < minimum or amount % step != 0:
             _clear_session(context)
             await message.reply_text("⚠️ Withdrawal session expired. Please start again.")
             return True
@@ -284,6 +340,8 @@ async def withdraw_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await message.reply_text(
             "🧾 **CONFIRM WITHDRAWAL**\n\n"
             f"💰 Amount: {amount} Points\n"
+            f"💵 You will receive: {_bdt_text(amount, rate)}\n"
+            f"💱 Rate: {rate} Points = ৳100\n"
             f"💳 Method: {name}\n"
             f"👤 Account: `{account}`\n\n"
             "Please confirm your withdrawal.",
@@ -304,11 +362,16 @@ async def confirm_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE)
     method = context.user_data.get("withdraw_method")
     amount = _safe_int(context.user_data.get("withdraw_amount", 0))
     account = str(context.user_data.get("withdraw_account", "")).strip()
+    settings = _withdraw_settings()
+    minimum = settings["min_points"]
+    rate = settings["points_per_100_bdt"]
+    step = settings["step_points"]
 
     if (
         method not in METHODS
         or amount <= 0
-        or amount < MIN_WITHDRAW
+        or amount < minimum
+        or amount % step != 0
         or not _valid_account(method, account)
     ):
         _clear_session(context)
@@ -333,6 +396,7 @@ async def confirm_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE)
             amount=amount,
             method=method,
             payment_account=account,
+            withdrawal_rate_points_per_100_bdt=rate,
         )
     except Exception:
         logger.exception("reserve_withdrawal failed | user=%s", user_id)
@@ -352,6 +416,7 @@ async def confirm_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "✅ **WITHDRAWAL SUBMITTED**\n\n"
         f"🆔 ID: `{withdrawal.get('withdrawal_id', 'N/A')}`\n"
         f"💰 Amount: {_safe_int(withdrawal.get('amount', amount), amount)} Points\n"
+        f"💵 You will receive: {_bdt_text(_safe_int(withdrawal.get('amount', amount), amount), withdrawal.get('withdrawal_rate_points_per_100_bdt', rate))}\n"
         f"💳 Method: {withdrawal.get('method', method)}\n"
         f"👤 Account: `{withdrawal.get('payment_account', account)}`\n"
         f"🟡 Status: {withdrawal.get('status', 'pending')}\n\n"
@@ -402,9 +467,11 @@ async def withdrawal_history_page(update: Update, context: ContextTypes.DEFAULT_
     lines = ["📜 **WITHDRAWAL HISTORY**", ""]
 
     for item in records[:10]:
+        item_amount = _safe_int(item.get('amount', 0))
+        item_rate = item.get('withdrawal_rate_points_per_100_bdt')
         lines.extend([
             f"🆔 `{item.get('withdrawal_id', 'N/A')}`",
-            f"💰 {_safe_int(item.get('amount', 0))} Points",
+            f"💰 {item_amount} Points = {_bdt_text(item_amount, item_rate)}",
             f"💳 {item.get('method', 'N/A')}",
             f"📌 {item.get('status', 'unknown')}",
             "",

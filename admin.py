@@ -55,6 +55,8 @@ from database import (
     maintenance_reset_member_wallets,
     maintenance_cleanup_old_data,
     maintenance_optimize_indexes,
+    get_withdrawal_settings,
+    points_to_bdt,
 )
 
 
@@ -1087,11 +1089,14 @@ async def admin_withdrawals(
                 0,
             )
         )
+        item_bdt = item.get("bdt_amount")
+        if item_bdt is None:
+            item_bdt = points_to_bdt(amount, item.get("withdrawal_rate_points_per_100_bdt"))
 
         buttons.append(
             [
                 InlineKeyboardButton(
-                    f"💸 {withdrawal_id} • {amount}",
+                    f"💸 {withdrawal_id} • {amount} pts • ৳{float(item_bdt):g}",
                     callback_data=(
                         f"admin_withdraw_view_{withdrawal_id}"
                     ),
@@ -1195,6 +1200,10 @@ async def admin_withdrawal_view(
             0,
         )
     )
+    rate = withdrawal.get("withdrawal_rate_points_per_100_bdt")
+    bdt_amount = withdrawal.get("bdt_amount")
+    if bdt_amount is None:
+        bdt_amount = points_to_bdt(amount, rate)
 
     method = withdrawal.get(
         "method",
@@ -1226,6 +1235,8 @@ async def admin_withdrawal_view(
         f"🆔 ID: `{withdrawal_id}`\n"
         f"👤 User ID: `{user_id}`\n"
         f"💰 Amount: {amount} Points\n"
+        f"💵 Payout: ৳{float(bdt_amount):g}\n"
+        f"💱 Rate: {rate or get_withdrawal_settings()['points_per_100_bdt']} Points = ৳100\n"
         f"💳 Method: {method}\n"
         f"📱 Account: `{account}`\n"
         f"🕒 Created: {created_text}\n"
@@ -1303,13 +1314,18 @@ async def admin_withdrawal_approve(
     if withdrawal:
         user_id = int(withdrawal.get("user_id", 0))
         amount = int(withdrawal.get("amount", 0))
+        rate = withdrawal.get("withdrawal_rate_points_per_100_bdt")
+        bdt_amount = withdrawal.get("bdt_amount")
+        if bdt_amount is None:
+            bdt_amount = points_to_bdt(amount, rate)
         try:
             await context.bot.send_message(
                 chat_id=user_id,
                 text=(
                     "🟢 **WITHDRAWAL APPROVED**\n\n"
                     f"🆔 ID: `{withdrawal_id}`\n"
-                    f"💰 Amount: {amount} Points\n\n"
+                    f"💰 Amount: {amount} Points\n"
+                    f"💵 Payout: ৳{float(bdt_amount):g}\n\n"
                     "Your withdrawal has been approved by Admin."
                 ),
                 parse_mode="Markdown",
@@ -2109,6 +2125,10 @@ async def admin_settings(
         "notifications",
         True,
     )
+    withdraw_settings = get_withdrawal_settings()
+    withdraw_rate = withdraw_settings["points_per_100_bdt"]
+    withdraw_min = withdraw_settings["min_points"]
+    withdraw_step = withdraw_settings["step_points"]
 
     await query.edit_message_text(
 
@@ -2118,7 +2138,12 @@ async def admin_settings(
         f"{'ON' if maintenance else 'OFF'}\n"
 
         f"🔔 Notifications: "
-        f"{'ON' if notifications else 'OFF'}",
+        f"{'ON' if notifications else 'OFF'}\n\n"
+        "💸 **WITHDRAWAL CONTROL**\n"
+        f"💱 Rate: {withdraw_rate} Points = ৳100\n"
+        f"📌 Minimum: {withdraw_min} Points = ৳{points_to_bdt(withdraw_min, withdraw_rate):g}\n"
+        f"🔢 Step: {withdraw_step} Points\n"
+        "Examples: 1000 Points = ৳100 • 1500 Points = ৳150",
 
         reply_markup=InlineKeyboardMarkup(
             [
@@ -2143,6 +2168,13 @@ async def admin_settings(
 
                 [
                     InlineKeyboardButton(
+                        "💸 Withdrawal Settings",
+                        callback_data="admin_withdraw_settings",
+                    )
+                ],
+
+                [
+                    InlineKeyboardButton(
                         "🔙 Admin Panel",
                         callback_data="admin",
                     )
@@ -2153,6 +2185,76 @@ async def admin_settings(
 
         parse_mode="Markdown",
     )
+
+# ==================================================
+# WITHDRAWAL SETTINGS
+# ==================================================
+
+async def admin_withdraw_settings(update, context):
+    query = update.callback_query
+    if not query or not admin_only(query.from_user.id):
+        if query:
+            await query.answer("🚫 Admin only.", show_alert=True)
+        return
+    await query.answer()
+    settings = get_withdrawal_settings()
+    rate = settings["points_per_100_bdt"]
+    minimum = settings["min_points"]
+    step = settings["step_points"]
+    await query.edit_message_text(
+        "💸 **WITHDRAWAL CONTROL CENTER**\n\n"
+        f"💱 Conversion Rate: **{rate} Points = ৳100**\n"
+        f"📌 Minimum Withdrawal: **{minimum} Points = ৳{points_to_bdt(minimum, rate):g}**\n"
+        f"🔢 Allowed Step: **{step} Points**\n\n"
+        "✅ Users can withdraw 1000, 1500, 2000, 2500... when the step is 500.\n"
+        "❌ Arbitrary amounts like 1005 or 1010 are rejected.\n\n"
+        "This setting controls the Points → BDT conversion used for new withdrawal requests.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💱 Change Rate", callback_data="admin_set_withdraw_rate")],
+            [InlineKeyboardButton("📌 Change Minimum", callback_data="admin_set_withdraw_min")],
+            [InlineKeyboardButton("🔢 Change Step", callback_data="admin_set_withdraw_step")],
+            [InlineKeyboardButton("🔙 Bot Settings", callback_data="admin_settings")],
+        ]),
+        parse_mode="Markdown",
+    )
+
+
+async def admin_set_withdraw_rate(update, context):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["admin_action"] = "set_withdraw_rate"
+    await query.edit_message_text(
+        "💱 **CHANGE WITHDRAWAL RATE**\n\n"
+        "Send how many Points should equal ৳100.\n\n"
+        "Example: `1000` → 1000 Points = ৳100\n"
+        "Example: `1200` → 1200 Points = ৳100",
+        reply_markup=admin_back(), parse_mode="Markdown"
+    )
+
+
+async def admin_set_withdraw_min(update, context):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["admin_action"] = "set_withdraw_min"
+    await query.edit_message_text(
+        "📌 **CHANGE MINIMUM WITHDRAWAL**\n\n"
+        "Send the minimum Points required for withdrawal.\n"
+        "Example: `1000`",
+        reply_markup=admin_back(), parse_mode="Markdown"
+    )
+
+
+async def admin_set_withdraw_step(update, context):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["admin_action"] = "set_withdraw_step"
+    await query.edit_message_text(
+        "🔢 **CHANGE WITHDRAWAL STEP**\n\n"
+        "Send the Points step allowed for withdrawal amounts.\n\n"
+        "Example: `500` allows 1000, 1500, 2000, 2500...",
+        reply_markup=admin_back(), parse_mode="Markdown"
+    )
+
 
 # ==================================================
 # BROADCAST
@@ -2496,6 +2598,9 @@ async def admin_text_handler(
                 0,
             )
         )
+        bdt_amount = withdrawal.get("bdt_amount")
+        if bdt_amount is None:
+            bdt_amount = points_to_bdt(amount, withdrawal.get("withdrawal_rate_points_per_100_bdt"))
 
         success = reject_withdrawal(
             withdrawal_id,
@@ -2528,7 +2633,7 @@ async def admin_text_handler(
                     "🔴 **WITHDRAWAL REJECTED**\n\n"
 
                     f"🆔 ID: `{withdrawal_id}`\n"
-                    f"💰 Amount: {amount} Points\n\n"
+                    f"💰 Amount: {amount} Points = ৳{float(bdt_amount):g}\n\n"
 
                     f"📝 Reason: {reason}\n\n"
 
@@ -2559,7 +2664,7 @@ async def admin_text_handler(
 
             f"🆔 ID: `{withdrawal_id}`\n"
             f"👤 User: `{target_user_id}`\n"
-            f"💰 Refunded: {amount} Points\n"
+            f"💰 Refunded: {amount} Points = ৳{float(bdt_amount):g}\n"
             f"📝 Reason: {reason}",
 
             reply_markup=admin_back(),
@@ -2914,6 +3019,63 @@ async def admin_text_handler(
 
         return True
         # ==================================================
+    # WITHDRAWAL SETTINGS
+    # ==================================================
+
+    if action in ("set_withdraw_rate", "set_withdraw_min", "set_withdraw_step"):
+        try:
+            value = int(text)
+        except ValueError:
+            await update.message.reply_text("❌ Please send a whole number.", reply_markup=admin_back())
+            return True
+
+        if value <= 0:
+            await update.message.reply_text("❌ Value must be greater than 0.", reply_markup=admin_back())
+            return True
+
+        current = get_withdrawal_settings()
+        if action == "set_withdraw_rate":
+            field = "withdraw_points_per_100_bdt"
+            label = "Conversion Rate"
+        elif action == "set_withdraw_min":
+            field = "withdraw_min_points"
+            label = "Minimum Withdrawal"
+        else:
+            field = "withdraw_step_points"
+            label = "Withdrawal Step"
+
+        if action == "set_withdraw_step" and value > 100000000:
+            await update.message.reply_text("❌ Step is too large.", reply_markup=admin_back())
+            return True
+
+        if action == "set_withdraw_min" and value > 100000000:
+            await update.message.reply_text("❌ Minimum is too large.", reply_markup=admin_back())
+            return True
+
+        if action == "set_withdraw_rate" and value > 100000000:
+            await update.message.reply_text("❌ Rate is too large.", reply_markup=admin_back())
+            return True
+
+        db["bot_settings"].update_one(
+            {"_id": "main"},
+            {"$set": {field: value}},
+            upsert=True,
+        )
+        context.user_data.clear()
+        updated = get_withdrawal_settings()
+        await update.message.reply_text(
+            "✅ **WITHDRAWAL SETTING UPDATED**\n\n"
+            f"💸 {label}: `{value}`\n"
+            f"💱 Current rate: **{updated['points_per_100_bdt']} Points = ৳100**\n"
+            f"📌 Minimum: **{updated['min_points']} Points**\n"
+            f"🔢 Step: **{updated['step_points']} Points**\n\n"
+            "Example: `1000 Points = ৳100` • `1500 Points = ৳150` when the rate is 1000 Points = ৳100.",
+            reply_markup=admin_back(),
+            parse_mode="Markdown",
+        )
+        return True
+
+    # ==================================================
     # SETTINGS
     # ==================================================
 
@@ -3371,6 +3533,10 @@ async def admin_callback(
         "admin_add_ref_milestone": admin_add_ref_milestone,
         "admin_del_ref_milestone": admin_del_ref_milestone,
         "admin_settings": admin_settings,
+        "admin_withdraw_settings": admin_withdraw_settings,
+        "admin_set_withdraw_rate": admin_set_withdraw_rate,
+        "admin_set_withdraw_min": admin_set_withdraw_min,
+        "admin_set_withdraw_step": admin_set_withdraw_step,
         "admin_broadcast": admin_broadcast,
         "admin_bc_all": admin_bc_all,
         "admin_bc_active": admin_bc_active,
