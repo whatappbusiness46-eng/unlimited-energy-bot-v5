@@ -3517,7 +3517,22 @@ async def admin_provider_payouts(update, context):
                 provider_total = sum(float(r.get("reward_raw", 0) or 0) for r in active)
             except (TypeError, ValueError):
                 provider_total = 0.0
-            user_points = sum(int(r.get("points", 0) or 0) for r in active)
+            if provider == "offerwallme":
+                # Historical Offerwall.me events may contain the old oversized
+                # credited-point value. Recalculate the member reward from the
+                # stored provider reward using the current placement-currency
+                # rules so the admin total remains accurate.
+                try:
+                    from provider_integrations import _offerwallme_reward_points
+                    user_points = sum(
+                        _offerwallme_reward_points(r.get("reward_raw", 0), r.get("user_id"))
+                        for r in active
+                    )
+                except Exception:
+                    logger.exception("Offerwall.me payout total recalculation failed")
+                    user_points = sum(int(r.get("points", 0) or 0) for r in active)
+            else:
+                user_points = sum(int(r.get("points", 0) or 0) for r in active)
             stats[provider] = (len(active), provider_total, user_points)
 
         ow_count, ow_total, ow_points = stats["offerwallme"]
@@ -3566,7 +3581,14 @@ async def admin_provider_payouts(update, context):
                 event_id = str(r.get("event_id", ""))[:10]
                 user_id = str(r.get("user_id", ""))
                 reward = str(r.get("reward_raw", r.get("provider_reward", "0")))[:12]
-                points = int(r.get("points", 0) or 0)
+                if str(r.get("provider", "")).lower() == "offerwallme":
+                    try:
+                        from provider_integrations import _offerwallme_reward_points
+                        points = _offerwallme_reward_points(r.get("reward_raw", 0), r.get("user_id"))
+                    except Exception:
+                        points = int(r.get("points", 0) or 0)
+                else:
+                    points = int(r.get("points", 0) or 0)
                 status = str(r.get("status", "1"))[:8]
                 offer = str(r.get("offer_title") or r.get("params", {}).get("offer_name") or r.get("params", {}).get("offerName") or "Unknown offer")[:28]
                 text += f"• `{provider}|U:{user_id}|{offer}|R:${reward}|+{points}|{status}|{event_id}`\n"

@@ -26,9 +26,20 @@ def _cache_get(key):
     if not entry:
         return None
     if time.time() - float(entry.get("ts", 0)) >= _PROVIDER_CACHE_TTL:
-        _provider_cache.pop(key, None)
         return None
     return list(entry.get("items", []))
+
+
+def _cache_get_stale(key):
+    entry = _provider_cache.get(key)
+    if not entry:
+        return None
+    return list(entry.get("items", []))
+
+
+def _cache_fresh(key):
+    entry = _provider_cache.get(key)
+    return bool(entry and time.time() - float(entry.get("ts", 0)) < _PROVIDER_CACHE_TTL)
 
 def _cache_set(key, items):
     _provider_cache[key] = {"ts": time.time(), "items": list(items)}
@@ -273,11 +284,11 @@ def _offerwallme_form_request(endpoint: str, params: Dict[str, Any]):
             return raw
 
 
-def get_offerwallme_offers(user_id: int):
+def get_offerwallme_offers(user_id: int, force_refresh: bool = False):
     if not _enabled("offerwallme"):
         return []
     cache_key = ("offerwallme_offers", int(user_id))
-    cached = _cache_get(cache_key)
+    cached = None if force_refresh else _cache_get(cache_key)
     if cached is not None:
         return cached
     payload = _offerwallme_request(
@@ -317,11 +328,11 @@ def sync_offerwallme_offers(user_id: int) -> int:
     return len(offers)
 
 
-def get_offerwallme_tasks(user_id: int):
+def get_offerwallme_tasks(user_id: int, force_refresh: bool = False):
     if not _enabled("offerwallme"):
         return []
     cache_key = ("offerwallme_tasks", int(user_id))
-    cached = _cache_get(cache_key)
+    cached = None if force_refresh else _cache_get(cache_key)
     if cached is not None:
         return cached
     payload = _offerwallme_request(
@@ -412,11 +423,11 @@ def submit_offerwallme_task_proof(user_id: int, task_id: str, proof: str):
     return {"ok": ok, "raw": payload, "message": str(payload or "")}
 
 
-def get_offerwallme_shortlinks(user_id: int):
+def get_offerwallme_shortlinks(user_id: int, force_refresh: bool = False):
     if not _enabled("offerwallme"):
         return []
     cache_key = ("offerwallme_shortlinks", int(user_id))
-    cached = _cache_get(cache_key)
+    cached = None if force_refresh else _cache_get(cache_key)
     if cached is not None:
         return cached
     payload = _offerwallme_request(
@@ -440,7 +451,8 @@ def get_offerwallme_shortlinks(user_id: int):
             "reward": _first(raw, ("reward", "points", "amount"), 0),
             "interval": _first(raw, ("interval", "cooldown"), 0),
         })
-    return result
+    return _cache_set(cache_key, result)
+
 
 def _first(data, keys, default=None):
     if not isinstance(data, dict):
@@ -592,13 +604,13 @@ def sync_cpagrip_offers(user_id: int) -> int:
         return 0
 
 
-def get_provider_offers(user_id: int, providers: Optional[Iterable[str]] = None):
+def get_provider_offers(user_id: int, providers: Optional[Iterable[str]] = None, force_refresh: bool = False):
     providers = [p.lower() for p in (providers or ("cpagrip",))]
     providers = [p for p in providers if p == "cpagrip" and _enabled(p)]
     if not providers:
         return []
     cache_key = ("cpagrip_offers", int(user_id))
-    cached = _cache_get(cache_key)
+    cached = None if force_refresh else _cache_get(cache_key)
     if cached is not None:
         return cached
     for provider in providers:
@@ -928,6 +940,37 @@ def process_postback(provider: str, params: Dict[str, Any]):
     return {"ok": True, "message": "credited", "provider": provider, "event_id": event_id, "user_id": user_id, "points": points}
 
 
+
+
+def get_cached_provider_offers(user_id: int):
+    return _cache_get_stale(("cpagrip_offers", int(user_id)))
+
+
+def get_cached_offerwallme_tasks(user_id: int):
+    return _cache_get_stale(("offerwallme_tasks", int(user_id)))
+
+
+def get_cached_offerwallme_shortlinks(user_id: int):
+    return _cache_get_stale(("offerwallme_shortlinks", int(user_id)))
+
+
+def provider_cache_fresh(kind: str, user_id: int) -> bool:
+    return _cache_fresh((str(kind), int(user_id)))
+
+
+def refresh_provider_offers(user_id: int):
+    _cache_clear("cpagrip_offers", user_id)
+    return get_provider_offers(user_id, force_refresh=True)
+
+
+def refresh_offerwallme_tasks(user_id: int):
+    _cache_clear("offerwallme_tasks", user_id)
+    return get_offerwallme_tasks(user_id, force_refresh=True)
+
+
+def refresh_offerwallme_shortlinks(user_id: int):
+    _cache_clear("offerwallme_shortlinks", user_id)
+    return get_offerwallme_shortlinks(user_id, force_refresh=True)
 
 
 def provider_status():

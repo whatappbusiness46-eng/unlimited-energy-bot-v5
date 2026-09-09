@@ -4,6 +4,7 @@
 # Rewards are credited only after a verified provider postback.
 # ============================================================
 
+import asyncio
 import logging
 import os
 import time
@@ -15,9 +16,13 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from database import get_user
-from provider_integrations import get_provider_offers, _reward_points
+from provider_integrations import (
+    get_provider_offers, get_cached_provider_offers, provider_cache_fresh,
+    refresh_provider_offers, _reward_points,
+)
 
 logger = logging.getLogger(__name__)
+_BACKGROUND_REFRESHING = set()
 
 # Legacy/manual offers remain available for migration, but they are
 # display-only unless a real provider postback is configured.
@@ -93,6 +98,45 @@ def _live_offers(user_id: int) -> list:
         return []
 
 
+def _cached_live_offers(user_id: int) -> list:
+    try:
+        return list(get_cached_provider_offers(user_id) or [])
+    except Exception:
+        return []
+
+
+async def _refresh_offers_in_background(query, user_id: int):
+    key = int(user_id)
+    if key in _BACKGROUND_REFRESHING:
+        return
+    _BACKGROUND_REFRESHING.add(key)
+    try:
+        await asyncio.to_thread(refresh_provider_offers, user_id)
+        if query.message:
+            live = _cached_live_offers(user_id) or []
+            if live:
+                lines = [
+                    "🎁 **LIVE OFFERS**", "",
+                    "Complete an offer normally. Your reward is credited only after the provider confirms the conversion.", "",
+                ]
+                for item in live[:CPAGRIP_OFFER_LIMIT]:
+                    reward = _member_reward(item)
+                    lines.append(f"• {html_escape(str(item.get('custom_title') or item.get('title', 'Special Offer')))} — Earn +{reward} Points")
+                try:
+                    await query.edit_message_text("\n".join(lines), reply_markup=offers_menu(user_id), parse_mode="HTML")
+                except Exception:
+                    pass
+            else:
+                try:
+                    await query.edit_message_text("🎁 **OFFERS**\n\nNo live offers are available right now.", reply_markup=offers_menu(user_id), parse_mode="HTML")
+                except Exception:
+                    pass
+    except Exception:
+        logger.exception("Background offer refresh failed | user=%s", user_id)
+    finally:
+        _BACKGROUND_REFRESHING.discard(key)
+
+
 def _member_reward(item):
     if item.get("custom_reward_locked"):
         try:
@@ -104,8 +148,7 @@ def _member_reward(item):
 
 def offers_menu(user_id: int):
     keyboard = []
-    live = _live_offers(user_id)
-
+    live = _cached_live_offers(user_id)
     for item in live[:CPAGRIP_OFFER_LIMIT]:
         provider = str(item.get("provider", "provider"))
         offer_id = str(item.get("offer_id", ""))
@@ -140,13 +183,21 @@ async def offers_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("🚫 Your account is restricted.")
         return
 
-    live = _live_offers(user.id)
+    live = _cached_live_offers(user.id)
+    if not provider_cache_fresh("cpagrip_offers", user.id):
+        try:
+            if update.callback_query:
+                context.application.create_task(_refresh_offers_in_background(update.callback_query, user.id))
+            else:
+                # Message-based opens still get an immediate page; the next callback refreshes the list.
+                context.application.create_task(asyncio.to_thread(refresh_provider_offers, user.id))
+        except Exception:
+            pass
 
     if not live:
         text = (
             "🎁 **OFFERS**\n\n"
-            "No live offers are available right now.\n\n"
-            "Admin must configure the provider API and postback."
+            + ("⏳ Loading latest offers...\n\nPlease wait a moment; the offer list is being refreshed." if not provider_cache_fresh("cpagrip_offers", user.id) else "No live offers are available right now.\n\nAdmin must configure the provider API and postback.")
         )
     else:
         lines = [
@@ -163,11 +214,14 @@ async def offers_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         text = "\n".join(lines)
 
-    await message.reply_text(
-        text,
-        reply_markup=offers_menu(user.id),
-        parse_mode="HTML",
-    )
+    markup = offers_menu(user.id)
+    if update.callback_query:
+        try:
+            await update.callback_query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
+        except Exception:
+            await message.reply_text(text, reply_markup=markup, parse_mode="HTML")
+    else:
+        await message.reply_text(text, reply_markup=markup, parse_mode="HTML")
 
 
 async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -186,7 +240,7 @@ async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("⚠️ Invalid offer.")
         return
 
-    items = _live_offers(query.from_user.id)
+    items = _cached_live_offers(query.from_user.id)
     offer = next(
         (
             x for x in items

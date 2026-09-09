@@ -2,6 +2,7 @@
 # SHORTLINKS SYSTEM
 # ============================================================
 
+import asyncio
 import logging
 import secrets
 import time
@@ -16,7 +17,10 @@ from telegram import (
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
-from provider_integrations import get_offerwallme_shortlinks, _offerwallme_reward_points
+from provider_integrations import (
+    get_offerwallme_shortlinks, get_cached_offerwallme_shortlinks, provider_cache_fresh,
+    refresh_offerwallme_shortlinks, _offerwallme_reward_points,
+)
 from config import OFFERWALLME_SHORTLINK_LIMIT
 
 from database import (
@@ -28,6 +32,7 @@ from database import (
 )
 
 logger = logging.getLogger(__name__)
+_BACKGROUND_REFRESHING = set()
 
 SHORTLINKS: Dict[str, Dict[str, Any]] = {}
 SHORTLINK_COLLECTION = db["shortlinks"]
@@ -299,7 +304,7 @@ async def offerwallme_shortlink_callback(update: Update, context: ContextTypes.D
         return
     await query.answer()
     shortlink_id = data[len(prefix):]
-    links = get_offerwallme_shortlinks(query.from_user.id)
+    links = list(get_cached_offerwallme_shortlinks(query.from_user.id) or [])
     link = next((x for x in links if str(x.get("id")) == shortlink_id), None)
     if not link or not link.get("url"):
         await _safe_edit(query, 
@@ -331,6 +336,44 @@ async def offerwallme_shortlink_callback(update: Update, context: ContextTypes.D
     )
 
 
+async def _refresh_shortlinks_in_background(query, user_id: int):
+    key = int(user_id)
+    if key in _BACKGROUND_REFRESHING:
+        return
+    _BACKGROUND_REFRESHING.add(key)
+    try:
+        await asyncio.to_thread(refresh_offerwallme_shortlinks, user_id)
+        if query and query.message:
+            # Re-enter the page using the refreshed cache without blocking the event loop.
+            links = list(get_cached_offerwallme_shortlinks(user_id) or [])
+            items = get_shortlinks(include_disabled=False)
+            text = (
+                "🔗 **SHORTLINKS**\n\n"
+                "Open available shortlinks and complete them normally.\n"
+                "Offerwall.me rewards are credited only after a verified provider postback."
+            )
+            rows = []
+            for item in items:
+                if shortlink_available(user_id, item["id"]):
+                    rows.append([InlineKeyboardButton(f"🔗 {item['name']}", callback_data=f"shortlink_{item['id']}")])
+            if links:
+                rows.append([InlineKeyboardButton("💰 OFFERWALL.ME SHORTLINKS", callback_data="shortlinks")])
+                for item in links[:OFFERWALLME_SHORTLINK_LIMIT]:
+                    link_id = str(item.get("id") or "")
+                    callback = f"owshort_{link_id}"
+                    if not link_id or len(callback) > 64:
+                        continue
+                    reward = _offerwallme_reward_points(item.get("reward"), user_id)
+                    title = str(item.get("title") or "Offerwall Shortlink")[:28]
+                    rows.append([InlineKeyboardButton(f"💰 {title} (+{reward})", callback_data=callback)])
+            rows.append([InlineKeyboardButton("🏠 Home", callback_data="home")])
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
+    except Exception:
+        logger.exception("Background shortlink refresh failed | user=%s", user_id)
+    finally:
+        _BACKGROUND_REFRESHING.discard(key)
+
+
 async def shortlinks_page(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -341,16 +384,20 @@ async def shortlinks_page(
         return
 
     items = get_shortlinks(include_disabled=False)
-    try:
-        offerwall_links = get_offerwallme_shortlinks(user.id)
-    except Exception:
-        logger.exception("Offerwall.me shortlink fetch failed | user=%s", user.id)
-        offerwall_links = []
+    offerwall_links = list(get_cached_offerwallme_shortlinks(user.id) or [])
+    if not provider_cache_fresh("offerwallme_shortlinks", user.id):
+        try:
+            if update.callback_query:
+                context.application.create_task(_refresh_shortlinks_in_background(update.callback_query, user.id))
+            else:
+                context.application.create_task(asyncio.to_thread(refresh_offerwallme_shortlinks, user.id))
+        except Exception:
+            pass
 
     if not items and not offerwall_links:
         text = (
             "🔗 **SHORTLINKS**\n\n"
-            "No shortlinks are available right now."
+            + ("⏳ Loading latest shortlinks...\n\nPlease wait a moment; the list is being refreshed." if not provider_cache_fresh("offerwallme_shortlinks", user.id) else "No shortlinks are available right now.")
         )
         keyboard = [[
             InlineKeyboardButton("🏠 Home", callback_data="home")

@@ -1,6 +1,7 @@
 # ============================================================
 # TASK SYSTEM - MongoDB backed, admin managed
 # ============================================================
+import asyncio
 import logging
 import os
 import time
@@ -17,11 +18,13 @@ from database import (
 )
 from config import ADMIN_ID, OFFERWALLME_TASK_LIMIT
 from provider_integrations import (
-    get_offerwallme_tasks, submit_offerwallme_task_proof, _offerwallme_reward_points,
+    get_offerwallme_tasks, get_cached_offerwallme_tasks, provider_cache_fresh,
+    refresh_offerwallme_tasks, submit_offerwallme_task_proof, _offerwallme_reward_points,
     create_offerwall_task_proof, get_offerwall_task_submission, mark_offerwall_task_submission,
 )
 
 logger = logging.getLogger(__name__)
+_BACKGROUND_REFRESHING = set()
 
 
 def _md(value):
@@ -493,25 +496,51 @@ async def complete_task_async(user_id, task_id, bot):
 
 def _get_offerwall_tasks_cached(user_id):
     try:
-        uid = int(user_id)
-    except (TypeError, ValueError):
-        return []
-    now = _now()
-    cached = _OFFERWALL_TASK_CACHE.get(uid)
-    if cached and now - cached.get("ts", 0) < _OFFERWALL_TASK_CACHE_TTL:
-        return list(cached.get("tasks", []))
-    try:
-        tasks = list(get_offerwallme_tasks(uid) or [])
+        tasks = get_cached_offerwallme_tasks(int(user_id))
+        return list(tasks or [])
     except Exception:
-        logger.exception("Offerwall.me task fetch failed | user=%s", uid)
-        tasks = []
-    _OFFERWALL_TASK_CACHE[uid] = {"ts": now, "tasks": tasks}
-    # Keep this small so long-running bots do not accumulate one entry per user.
-    if len(_OFFERWALL_TASK_CACHE) > 200:
-        oldest = sorted(_OFFERWALL_TASK_CACHE.items(), key=lambda item: item[1].get("ts", 0))[:50]
-        for old_uid, _ in oldest:
-            _OFFERWALL_TASK_CACHE.pop(old_uid, None)
-    return list(tasks)
+        return []
+
+
+async def _refresh_tasks_in_background(query, user_id: int):
+    key = int(user_id)
+    if key in _BACKGROUND_REFRESHING:
+        return
+    _BACKGROUND_REFRESHING.add(key)
+    try:
+        await asyncio.to_thread(refresh_offerwallme_tasks, user_id)
+        if query and query.message:
+            db_user = get_user(user_id, create=False)
+            if not db_user or db_user.get("banned") or db_user.get("blacklisted"):
+                return
+            task_list = get_tasks(user_id=user_id)
+            count, _ = _daily_count(db_user)
+            settings = db["bot_settings"].find_one({"_id":"main"}) or {}
+            limit = max(1, _safe_int(settings.get("daily_task_limit"), 20))
+            offerwall_tasks = _get_offerwall_tasks_cached(user_id)
+            normal = [t for t in task_list if t.get("audience","normal") in {"normal","both"}]
+            vip = [t for t in task_list if t.get("audience","normal") in {"vip","both"}]
+            lines = ["📋 **TASK CENTER**", "", f"📊 Daily Tasks: {count}/{limit}", ""]
+            if normal:
+                lines += ["🟢 **NORMAL TASKS**"]
+                for t in normal:
+                    lines.append(f"{'🟢' if task_available(user_id,t['id']) else '✅'} {_md(t.get('title',''))} — +{_safe_int(t.get('reward'),0)} Points")
+                lines.append("")
+            if _is_vip(user_id) and vip:
+                lines += ["💎 **VIP TASKS**"]
+                for t in vip:
+                    lines.append(f"{'🟢' if task_available(user_id,t['id']) else '✅'} {_md(t.get('title',''))} — +{_safe_int(t.get('reward'),0)} Points")
+            if offerwall_tasks:
+                lines += ["", "💰 **OFFERWALL.ME TASKS**"]
+                for t in offerwall_tasks[:OFFERWALLME_TASK_LIMIT]:
+                    reward = _offerwallme_reward_points(t.get("reward"), user_id)
+                    lines.append(f"🟢 {_md(t.get('title','Offerwall Task'))} — +{reward} Points")
+            lines += ["", "Complete each available task once. Rewards are permanent and cannot be claimed again.", "", "For click-only tasks, Telegram cannot prove that the URL was actually opened; the Claim button records one completion per user. Do not use click-only rewards for ad-provider links unless that provider explicitly permits incentivized traffic."]
+            await query.edit_message_text("\n".join(lines), reply_markup=tasks_menu(user_id, offerwall_tasks=offerwall_tasks), parse_mode="Markdown")
+    except Exception:
+        logger.exception("Background task refresh failed | user=%s", user_id)
+    finally:
+        _BACKGROUND_REFRESHING.discard(key)
 
 
 def tasks_menu(user_id=None, offerwall_tasks=None):
@@ -544,10 +573,18 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("🚫 Your account is restricted."); return
     task_list=get_tasks(user_id=user.id); count,_=_daily_count(db_user); settings=db["bot_settings"].find_one({"_id":"main"}) or {}; limit=max(1,_safe_int(settings.get("daily_task_limit"),20))
     offerwall_tasks = _get_offerwall_tasks_cached(user.id)
+    if not provider_cache_fresh("offerwallme_tasks", user.id):
+        try:
+            if update.callback_query:
+                context.application.create_task(_refresh_tasks_in_background(update.callback_query, user.id))
+            else:
+                context.application.create_task(asyncio.to_thread(refresh_offerwallme_tasks, user.id))
+        except Exception:
+            pass
     normal=[t for t in task_list if t.get("audience","normal") in {"normal","both"}]
     vip=[t for t in task_list if t.get("audience","normal") in {"vip","both"}]
     if not task_list and not offerwall_tasks:
-        text="📋 **TASK CENTER**\n\nNo tasks are available for your membership right now."
+        text=("📋 **TASK CENTER**\n\n" + ("⏳ Loading latest tasks...\n\nPlease wait a moment; the task list is being refreshed." if not provider_cache_fresh("offerwallme_tasks", user.id) else "No tasks are available for your membership right now."))
     else:
         lines=["📋 **TASK CENTER**", "", f"📊 Daily Tasks: {count}/{limit}", ""]
         if normal:
@@ -569,7 +606,14 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("")
         lines.append("For click-only tasks, Telegram cannot prove that the URL was actually opened; the Claim button records one completion per user. Do not use click-only rewards for ad-provider links unless that provider explicitly permits incentivized traffic.")
         text="\n".join(lines)
-    await message.reply_text(text, reply_markup=tasks_menu(user.id, offerwall_tasks=offerwall_tasks), parse_mode="Markdown")
+    markup = tasks_menu(user.id, offerwall_tasks=offerwall_tasks)
+    if update.callback_query:
+        try:
+            await update.callback_query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+        except Exception:
+            await message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
+    else:
+        await message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
 
 
 async def task_callback(update, context):
@@ -669,7 +713,7 @@ async def offerwallme_task_proof_callback(update, context):
     await q.answer()
     context.user_data["offerwallme_pending_task"] = task_id
     try:
-        task = next((t for t in get_offerwallme_tasks(q.from_user.id) if str(t.get("id")) == task_id), {})
+        task = next((t for t in _get_offerwall_tasks_cached(q.from_user.id) if str(t.get("id")) == task_id), {})
     except Exception:
         task = {}
     proof_type = str(task.get("proof_type") or "Text").strip().lower()
