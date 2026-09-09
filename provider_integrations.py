@@ -603,16 +603,28 @@ def delete_provider_offer(provider: str, offer_id: str):
 
 
 def _reward_points(reward):
-    """Return the member reward for a verified provider conversion.
+    """Calculate the CPAGrip member reward from the real provider payout.
 
-    Provider payout is never exposed as the member reward. Keep the member
-    reward independently configurable, defaulting to 200 points.
+    CPAGrip payout values are treated as USD. The member receives the
+    configured percentage of that payout, converted with REWARD_POINTS_PER_USD.
+    The old fixed 200-point value remains only as a safe fallback when a
+    provider payout is missing/invalid, so existing offers never break.
     """
     try:
-        points = int(_env("CPAGRIP_DEFAULT_USER_REWARD_POINTS", "200"))
+        payout = Decimal(str(reward))
+        share = Decimal(_env("CPAGRIP_USER_REWARD_PERCENT", "40"))
+        rate = Decimal(_env("REWARD_POINTS_PER_USD", "1000"))
+        if payout > 0 and share > 0 and rate > 0:
+            points = int((payout * share / Decimal("100") * rate).quantize(Decimal("1")))
+            if points > 0:
+                return points
+    except (InvalidOperation, ValueError, TypeError):
+        pass
+    try:
+        fallback = int(_env("CPAGRIP_DEFAULT_USER_REWARD_POINTS", "200"))
     except (TypeError, ValueError):
-        points = 200
-    return max(1, points)
+        fallback = 200
+    return max(1, fallback)
 
 
 def _verify_postback(provider: str, params: Dict[str, Any]) -> bool:
@@ -844,7 +856,27 @@ def process_postback(provider: str, params: Dict[str, Any]):
     points = _reward_points(reward_raw)
     if points <= 0:
         return {"ok": False, "error": "invalid_reward"}
-    event_doc = {"provider": provider, "event_id": event_id, "user_id": user_id, "reward_raw": str(reward_raw), "points": points, "status": status, "received_at": int(time.time()), "params": {str(k): str(v) for k, v in params.items()}}
+
+    offer_id = str(
+        params.get("offer_id") or params.get("offerid") or params.get("offerId") or
+        params.get("campaign_id") or params.get("campaignId") or ""
+    ).strip()
+    offer_doc = None
+    if offer_id:
+        offer_doc = provider_offers.find_one(
+            {"provider": "cpagrip", "offer_id": offer_id},
+            {"_id": 0, "title": 1, "custom_title": 1, "provider_reward": 1, "offer_id": 1},
+        )
+    offer_title = str((offer_doc or {}).get("custom_title") or (offer_doc or {}).get("title") or
+                      params.get("offer_name") or params.get("offerName") or "Unknown offer")
+    event_doc = {
+        "provider": provider, "event_id": event_id, "user_id": user_id,
+        "offer_id": offer_id, "offer_title": offer_title,
+        "provider_reward": float((offer_doc or {}).get("provider_reward") or reward_raw or 0),
+        "reward_raw": str(reward_raw), "points": points, "status": status,
+        "received_at": int(time.time()),
+        "params": {str(k): str(v) for k, v in params.items()},
+    }
     try:
         provider_events.insert_one(event_doc)
     except Exception as exc:

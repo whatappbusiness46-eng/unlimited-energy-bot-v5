@@ -3539,7 +3539,7 @@ async def admin_provider_payouts(update, context):
 
         text = (
             "💵 **PROVIDER PAYOUTS**\n\n"
-            "This section is **admin-only**. It shows provider-side reward values received by the bot and the points credited to members.\n\n"
+            "This section is **admin-only**. It shows the real provider payout, offer name, and the automatically calculated member reward.\n\n"
             "🟣 **Offerwall.me**\n"
             f"• Conversions: `{ow_count}`\n"
             f"• Provider reward total (placement currency): `{ow_total:g}`\n"
@@ -3550,10 +3550,27 @@ async def admin_provider_payouts(update, context):
             f"• Placement currency per USD: `{_admin_env('OFFERWALLME_CURRENCY_PER_USD', '200')}`\n\n"
             "🟠 **CPAGrip**\n"
             f"• Conversions: `{cp_count}`\n"
-            f"• Provider reward total (raw): `{cp_total:g}`\n"
-            f"• Member points credited: `{cp_points}`\n\n"
-            "📋 **Latest conversions**\n"
+            f"• Provider payout total (USD): `${cp_total:.2f}`\n"
+            f"• Member points credited: `{cp_points}`\n"
+            f"• User reward share: `{_admin_env('CPAGRIP_USER_REWARD_PERCENT', '40')}%`\n"
+            f"• Points per USD: `{_admin_env('REWARD_POINTS_PER_USD', '1000')}`\n\n"
+            "🎁 **Current CPAGrip offers / real payout**\n"
         )
+
+        live_cpagrip = list(db["provider_offers"].find(
+            {"provider": "cpagrip"},
+            {"_id": 0, "offer_id": 1, "title": 1, "custom_title": 1, "provider_reward": 1, "custom_reward_points": 1},
+        ).sort("updated_at", -1).limit(10))
+        if live_cpagrip:
+            for item in live_cpagrip:
+                title = str(item.get("custom_title") or item.get("title") or "Offer")[:36]
+                payout = float(item.get("provider_reward") or 0)
+                auto_points = int(item.get("custom_reward_points") or 0) or int(__import__("provider_integrations")._reward_points(payout))
+                text += f"• `{title}` — payout `${payout:.2f}` → member `+{auto_points}` pts\n"
+        else:
+            text += "No cached CPAGrip offers found.\n"
+
+        text += "\n📋 **Latest conversions**\n"
 
         if not rows:
             text += "No provider conversions recorded yet."
@@ -3562,10 +3579,11 @@ async def admin_provider_payouts(update, context):
                 provider = str(r.get("provider", "?")).upper()[:3]
                 event_id = str(r.get("event_id", ""))[:10]
                 user_id = str(r.get("user_id", ""))
-                reward = str(r.get("reward_raw", "0"))[:12]
+                reward = str(r.get("reward_raw", r.get("provider_reward", "0")))[:12]
                 points = int(r.get("points", 0) or 0)
                 status = str(r.get("status", "1"))[:8]
-                text += f"• `{provider}|U:{user_id}|R:{reward}|+{points}|{status}|{event_id}`\n"
+                offer = str(r.get("offer_title") or r.get("params", {}).get("offer_name") or r.get("params", {}).get("offerName") or "Unknown offer")[:28]
+                text += f"• `{provider}|U:{user_id}|{offer}|R:${reward}|+{points}|{status}|{event_id}`\n"
 
         await query.edit_message_text(
             text[:4000],
