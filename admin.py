@@ -1272,6 +1272,59 @@ async def admin_withdrawal_view(
     )
 
 
+async def admin_withdrawal_reject(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Start the withdrawal rejection flow and ask the admin for a reason."""
+    query = update.callback_query
+
+    if not query:
+        return
+
+    if not admin_only(query.from_user.id):
+        await query.answer(
+            "🚫 Admin only.",
+            show_alert=True,
+        )
+        return
+
+    withdrawal_id = str(query.data).replace(
+        "admin_withdraw_reject_",
+        "",
+        1,
+    )
+
+    # Make sure the request still exists and is pending before entering
+    # the text-input flow. This also prevents stale reject buttons from
+    # creating a broken admin session.
+    withdrawal = next(
+        (item for item in get_withdrawals(status="pending", limit=100)
+         if item.get("withdrawal_id") == withdrawal_id),
+        None,
+    )
+
+    if not withdrawal:
+        await query.answer(
+            "Withdrawal not found or already processed.",
+            show_alert=True,
+        )
+        return
+
+    context.user_data["admin_action"] = "withdrawal_reject_reason"
+    context.user_data["withdrawal_reject_id"] = withdrawal_id
+
+    await query.answer()
+    await query.edit_message_text(
+        "🔴 **REJECT WITHDRAWAL**\n\n"
+        f"🆔 Withdrawal ID: `{withdrawal_id}`\n\n"
+        "📝 Send the rejection reason now.\n"
+        "Example: `Invalid payment number`",
+        reply_markup=admin_back(),
+        parse_mode="Markdown",
+    )
+
+
 async def admin_withdrawal_approve(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
