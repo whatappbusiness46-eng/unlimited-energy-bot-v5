@@ -576,21 +576,33 @@ async def offerwallme_task_callback(update, context):
         await q.edit_message_text("⚠️ This Offerwall.me task is no longer available.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks", callback_data="tasks")]]))
         return
     reward = _offerwallme_reward_points(task.get("reward"), q.from_user.id)
-    instructions = str(task.get("instructions") or task.get("description") or "").replace("<p>", "").replace("</p>", "").strip()
-    proof_type = str(task.get("proof_type") or "Text")
-    proof_text = str(task.get("proof_text") or "Submit the required proof")
+    def _display_text(value):
+        return (str(value or "").replace("\\n", "\n").replace("<p>", "").replace("</p>", "").strip())
+
+    instructions = _display_text(task.get("instructions") or task.get("description"))
+    proof_type = _display_text(task.get("proof_type") or "Text")
+    proof_text = _display_text(task.get("proof_text") or "Submit the required proof")
     context.user_data.pop("offerwallme_pending_task", None)
     context.user_data["offerwallme_task_preview"] = task_id
-    text = f"🎯 **{_md(task.get('title','Offerwall Task'))}**\\n\\n"
-    if task.get("description"):
-        text += f"{_md(task.get('description'))}\\n\\n"
+    text = f"🎯 **{_md(_display_text(task.get('title','Offerwall Task')))}**\n\n"
+    description = _display_text(task.get("description"))
+    if description:
+        text += f"{_md(description)}\n\n"
     if instructions:
-        text += f"📋 **Instructions:**\\n{_md(instructions)}\\n\\n"
-    text += f"💰 Reward: +{reward} Points\\n🔐 Proof type: {_md(proof_type)}\\n✍️ {_md(proof_text)}"
-    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("📨 Submit Proof", callback_data=f"owtask_proof_{task_id}")],
-        [InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")],
-    ]), parse_mode="Markdown")
+        text += f"📋 **Instructions:**\n{_md(instructions)}\n\n"
+    text += f"💰 Reward: +{reward} Points\n🔐 Proof type: {_md(proof_type)}\n✍️ {_md(proof_text)}"
+    buttons = []
+    task_url = str(task.get("url") or task.get("link") or "").strip()
+    if task_url:
+        buttons.append([InlineKeyboardButton("🚀 Open Task", url=task_url)])
+    buttons.append([InlineKeyboardButton("📨 Submit Proof", callback_data=f"owtask_proof_{task_id}")])
+    buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
+    await q.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="Markdown",
+    )
+
 
 
 async def offerwallme_task_proof_callback(update, context):
@@ -600,19 +612,34 @@ async def offerwallme_task_proof_callback(update, context):
     await q.answer()
     task_id = str(q.data)[len("owtask_proof_"):]
     context.user_data["offerwallme_pending_task"] = task_id
+    try:
+        task = next((t for t in get_offerwallme_tasks(q.from_user.id) if str(t.get("id")) == task_id), {})
+    except Exception:
+        task = {}
+    proof_type = str(task.get("proof_type") or "Text").strip().lower()
+    prompt = "Send the required screenshot/image in the next message." if "image" in proof_type or "screenshot" in proof_type else "Send your proof in the next message."
     await q.edit_message_text(
-        "📨 **SUBMIT TASK PROOF**\\n\\nSend your proof in the next message.\\n\\n"
+        f"📨 **SUBMIT TASK PROOF**\n\n{prompt}\n\n"
         "⚠️ Submit only genuine proof. The provider/admin decides approval, and rewards are credited only after verified completion.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="tasks")]]),
         parse_mode="Markdown",
     )
 
 
+
 async def offerwallme_proof_message_handler(update, context):
     task_id = context.user_data.get("offerwallme_pending_task")
     if not task_id or not update.effective_message or not update.effective_user:
         return False
-    proof = str(update.effective_message.text or "").strip()
+    message = update.effective_message
+    if message.photo:
+        photo = message.photo[-1]
+        caption = str(message.caption or "").strip()
+        proof = f"telegram_photo_file_id:{photo.file_id}"
+        if caption:
+            proof += f"\ncaption:{caption}"
+    else:
+        proof = str(message.text or "").strip()
     if not proof:
         return False
     result = submit_offerwallme_task_proof(update.effective_user.id, str(task_id), proof)

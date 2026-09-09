@@ -183,6 +183,11 @@ def get_offerwallme_tasks(user_id: int):
         task_id = _first(raw, ("id", "task_id", "taskId"))
         if not task_id:
             continue
+        task_url = _first(
+            raw,
+            ("url", "link", "task_url", "taskUrl", "tracking_url", "click_url", "offer_url"),
+            "",
+        )
         reward = _first(
             raw,
             (
@@ -196,6 +201,7 @@ def get_offerwallme_tasks(user_id: int):
                 raw,
                 id=str(task_id),
                 reward=reward,
+                url=str(task_url or ""),
             )
         )
     return result
