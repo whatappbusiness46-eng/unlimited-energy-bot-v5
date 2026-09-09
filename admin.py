@@ -3522,10 +3522,12 @@ async def admin_provider_payouts(update, context):
             "This section is **admin-only**. It shows provider-side reward values received by the bot and the points credited to members.\n\n"
             "🟣 **Offerwall.me**\n"
             f"• Conversions: `{ow_count}`\n"
-            f"• Provider reward total: `${ow_total:.2f}`\n"
+            f"• Provider reward total (placement currency): `{ow_total:g}`\n"
+            f"• Estimated publisher USD: `${_admin_offerwall_usd(ow_total):.2f}`\n"
             f"• Member points credited: `{ow_points}`\n"
             f"• User reward share: `{_admin_env('OFFERWALLME_USER_REWARD_PERCENT', '40')}%`\n"
-            f"• Points per USD: `{_admin_env('OFFERWALLME_POINTS_PER_USD', '1000')}`\n\n"
+            f"• Reward unit: `{_admin_env('OFFERWALLME_REWARD_UNIT', 'points')}`\n"
+            f"• Placement currency per USD: `{_admin_env('OFFERWALLME_CURRENCY_PER_USD', '200')}`\n\n"
             "🟠 **CPAGrip**\n"
             f"• Conversions: `{cp_count}`\n"
             f"• Provider reward total (raw): `{cp_total:g}`\n"
@@ -3565,6 +3567,18 @@ async def admin_provider_payouts(update, context):
 def _admin_env(name, default=""):
     import os
     return os.getenv(name, default)
+
+
+def _admin_offerwall_usd(reward_total):
+    try:
+        unit = _admin_env("OFFERWALLME_REWARD_UNIT", "points").strip().lower()
+        value = float(reward_total or 0)
+        if unit in {"usd", "dollar", "dollars"}:
+            return value
+        rate = float(_admin_env("OFFERWALLME_CURRENCY_PER_USD", "200"))
+        return value / rate if rate > 0 else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 # ==================================================

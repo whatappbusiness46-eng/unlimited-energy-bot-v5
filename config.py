@@ -437,6 +437,11 @@ OFFERWALLME_ENABLED = os.getenv("OFFERWALLME_ENABLED", "false").strip().lower() 
 OFFERWALLME_POSTBACK_SECRET = os.getenv("OFFERWALLME_POSTBACK_SECRET", "").strip()
 OFFERWALLME_USER_REWARD_PERCENT = float(os.getenv("OFFERWALLME_USER_REWARD_PERCENT", "40"))
 OFFERWALLME_POINTS_PER_USD = float(os.getenv("OFFERWALLME_POINTS_PER_USD", "1000"))
+# Offerwall.me `reward` is normally reported in the placement currency.
+# The current placement uses Points, with 200 Points = $1. Keep this configurable
+# in case the publisher changes the placement currency/exchange rate later.
+OFFERWALLME_REWARD_UNIT = os.getenv("OFFERWALLME_REWARD_UNIT", "points").strip().lower()
+OFFERWALLME_CURRENCY_PER_USD = float(os.getenv("OFFERWALLME_CURRENCY_PER_USD", "200"))
 OFFERWALLME_API_KEY = os.getenv("OFFERWALLME_API_KEY", "").strip()
 OFFERWALLME_BEARER_TOKEN = os.getenv("OFFERWALLME_BEARER_TOKEN", "").strip()
 OFFERWALLME_DEFAULT_IP = os.getenv("OFFERWALLME_DEFAULT_IP", "0.0.0.0").strip()

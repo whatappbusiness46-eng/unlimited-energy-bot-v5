@@ -321,7 +321,7 @@ telegram_app.add_handler(
 
 telegram_app.add_handler(
     MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
+        (filters.TEXT | filters.PHOTO) & ~filters.COMMAND,
         text_message_router,
     )
 )

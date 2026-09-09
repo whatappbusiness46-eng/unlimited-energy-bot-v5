@@ -642,16 +642,33 @@ async def offerwallme_proof_message_handler(update, context):
         proof = str(message.text or "").strip()
     if not proof:
         return False
+
     result = submit_offerwallme_task_proof(update.effective_user.id, str(task_id), proof)
-    context.user_data.pop("offerwallme_pending_task", None)
     if result.get("ok"):
+        context.user_data.pop("offerwallme_pending_task", None)
+        status = str(result.get("status") or "").strip().lower()
+        if status in {"pending", "submitted", "received"}:
+            reply = (
+                "✅ Proof submitted successfully.\n\n"
+                "Offerwall.me received your proof and may review it before approval. "
+                "Points are credited only after the verified postback."
+            )
+        else:
+            reply = (
+                "✅ Proof submitted successfully.\n\n"
+                "Offerwall.me will approve it instantly or after advertiser review. "
+                "Points are credited only after the verified postback."
+            )
         await update.effective_message.reply_text(
-            "✅ Proof submitted successfully.\n\nOfferwall.me will approve it instantly or after advertiser review. Your Points are credited only after the verified postback.",
+            reply,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")]]),
         )
     else:
+        # Keep the pending task so the user can retry without reopening the task.
+        error = str(result.get("message") or result.get("error") or "temporary provider error")
+        logger.warning("Offerwall.me proof submission rejected | user=%s task=%s error=%s", update.effective_user.id, task_id, error)
         await update.effective_message.reply_text(
-            "❌ Proof submission failed. Please try the task again later.",
+            "❌ Proof submission failed right now. Please send the proof again or reopen the task later.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Tasks", callback_data="tasks")]]),
         )
     return True

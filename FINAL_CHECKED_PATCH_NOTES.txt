@@ -1,0 +1,12 @@
+Unlimited Energy Bot V5 - Final Checked/Fix Notes
+
+1. Fixed Offerwall.me task reward display when provider returns decimal/string rewards such as 0.50.
+2. Offerwall.me task parser now accepts reward/payout/amount/points/value/user_reward/reward_points variants.
+3. Offerwall.me task menu now uses the same configured member-reward conversion as task details/postback.
+4. Kept the previous shortlink safe-edit fix so Telegram "Message is not modified" does not crash the earn callback.
+5. Provider postback HTTP response is now always 200; JSON still reports ok/error, preventing unnecessary provider retries.
+6. Removed generated __pycache__ and .pyc files from the production ZIP.
+7. All Python files passed AST parsing and py_compile checks.
+8. No .env or private key files are included.
+
+No provider/API secrets are hardcoded in the project; Render Environment Variables remain the source of secrets.

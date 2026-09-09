@@ -115,6 +115,7 @@ def _offerwallme_request(endpoint: str, user_id: int, *, method="GET", body=None
 
 
 def _offerwallme_list(payload):
+    """Extract provider items from common Offerwall.me response envelopes."""
     if isinstance(payload, list):
         return payload
     if not isinstance(payload, dict):
@@ -122,11 +123,39 @@ def _offerwallme_list(payload):
     data = payload.get("data")
     if isinstance(data, list):
         return data
+    if isinstance(data, dict):
+        for key in ("offers", "tasks", "shortlinks", "results", "items", "data"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
     for key in ("offers", "tasks", "shortlinks", "results", "items"):
         value = payload.get(key)
         if isinstance(value, list):
             return value
     return []
+
+
+def _offerwallme_form_request(endpoint: str, params: Dict[str, Any]):
+    """POST form data for Offerwall.me PHP endpoints.
+
+    PHP task endpoints commonly read fields from ``$_POST``; JSON-only POSTs
+    can therefore look empty even though the same fields were supplied.
+    """
+    endpoint = str(endpoint or "").strip()
+    headers = {
+        "User-Agent": "UnlimitedEnergyBot/Final",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    data = urlencode({str(k): str(v) for k, v in (params or {}).items() if v is not None}).encode("utf-8")
+    req = Request(endpoint, data=data, headers=headers, method="POST")
+    with urlopen(req, timeout=15) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
 
 
 def get_offerwallme_offers(user_id: int):
@@ -199,6 +228,11 @@ def get_offerwallme_tasks(user_id: int):
         result.append(
             dict(
                 raw,
+                title=str(_first(raw, ("title", "name", "task_title", "taskTitle"), "Offerwall Task") or "Offerwall Task"),
+                description=str(_first(raw, ("description", "desc", "details", "task_description"), "") or ""),
+                instructions=str(_first(raw, ("instructions", "instruction", "steps"), "") or ""),
+                proof_type=str(_first(raw, ("proof_type", "proofType", "proof", "verification_type"), "Text") or "Text"),
+                proof_text=str(_first(raw, ("proof_text", "proofText", "proof_instruction", "proofInstruction"), "Submit the required proof") or "Submit the required proof"),
                 id=str(task_id),
                 reward=reward,
                 url=str(task_url or ""),
@@ -210,17 +244,41 @@ def get_offerwallme_tasks(user_id: int):
 def submit_offerwallme_task_proof(user_id: int, task_id: str, proof: str):
     if not _enabled("offerwallme"):
         return {"ok": False, "error": "provider_disabled"}
-    payload = _offerwallme_request(
-        _env("OFFERWALLME_TASK_SUBMIT_API_URL", "https://offerwall.me/tasksubmit.php"),
-        user_id,
-        method="POST",
-        body={"task_id": str(task_id), "proof": str(proof or "")},
-    )
+
+    api_key, bearer = _offerwallme_credentials()
+    if not api_key or not bearer:
+        return {"ok": False, "error": "missing_offerwallme_credentials"}
+
+    endpoint = _env("OFFERWALLME_TASK_SUBMIT_API_URL", "https://offerwall.me/tasksubmit.php")
+    params = {
+        "api": api_key,
+        "id": str(user_id),
+        "ip": _offerwallme_public_ip(),
+        "token": bearer,
+        "country": _env("OFFERWALLME_COUNTRY", "BD").upper(),
+        "task_id": str(task_id),
+        "proof": str(proof or ""),
+    }
+
+    try:
+        payload = _offerwallme_form_request(endpoint, params)
+    except Exception as exc:
+        logger.exception("Offerwall.me task proof request failed | user=%s task=%s", user_id, task_id)
+        return {"ok": False, "error": "request_failed", "detail": str(exc)}
+
     if isinstance(payload, dict):
-        status = payload.get("status")
-        ok = bool(payload.get("ok")) or status in {200, "200", "success", "approved", "pending"}
-        return {"ok": ok, "raw": payload, **({k: payload[k] for k in ("message", "status") if k in payload})}
-    return {"ok": False, "raw": payload}
+        status = str(payload.get("status") or "").strip().lower()
+        ok_value = payload.get("ok")
+        ok = bool(ok_value) or status in {"200", "success", "approved", "pending", "submitted", "1", "true"}
+        return {
+            "ok": ok,
+            "raw": payload,
+            **({k: payload[k] for k in ("message", "status") if k in payload}),
+        }
+
+    text = str(payload or "").strip().lower()
+    ok = any(token in text for token in ("success", "approved", "pending", "submitted", "received"))
+    return {"ok": ok, "raw": payload, "message": str(payload or "")}
 
 
 def get_offerwallme_shortlinks(user_id: int):
@@ -474,19 +532,31 @@ def _verify_postback(provider: str, params: Dict[str, Any]) -> bool:
 
 
 def _offerwallme_reward_points(reward_raw: Any, user_id: int = None) -> int:
-    """Convert Offerwall.me payout to the configured member reward.
+    """Convert Offerwall.me's placement-currency reward into member points.
 
-    Offerwall.me's Amount is treated as USD payout. The member receives only
-    OFFERWALLME_USER_REWARD_PERCENT of that amount, converted by
-    OFFERWALLME_POINTS_PER_USD. Provider payout is never shown as member pay.
+    The publisher placement currently uses ``Points`` as its currency, so the
+    provider's ``reward`` value is treated as placement points by default.
+    ``OFFERWALLME_REWARD_UNIT=usd`` can be used only if the placement/API is
+    actually configured to return USD. Members receive the configured share;
+    VIP membership multipliers are applied only after that base share.
     """
     try:
         reward = Decimal(str(reward_raw))
         share = Decimal(_env("OFFERWALLME_USER_REWARD_PERCENT", "40"))
+        unit = _env("OFFERWALLME_REWARD_UNIT", "points").lower()
         rate = Decimal(_env("OFFERWALLME_POINTS_PER_USD", "1000"))
-        if reward <= 0 or share <= 0 or rate <= 0:
+        if reward <= 0 or share <= 0:
             return 0
-        points = int((reward * share / Decimal("100") * rate).quantize(Decimal("1")))
+
+        if unit in {"usd", "dollar", "dollars"}:
+            if rate <= 0:
+                return 0
+            base_points = reward * rate
+        else:
+            # Offerwall.me placement currency is Points by default.
+            base_points = reward
+
+        points = int((base_points * share / Decimal("100")).quantize(Decimal("1")))
         if user_id is not None:
             try:
                 multiplier = Decimal(str(get_membership_multiplier(int(user_id))))
@@ -739,6 +809,8 @@ def provider_status():
         "offerwallme": _enabled("offerwallme"),
         "offerwallme_postback": bool(_env("OFFERWALLME_POSTBACK_SECRET")),
         "offerwallme_points_per_usd": _env("OFFERWALLME_POINTS_PER_USD", "1000"),
+        "offerwallme_reward_unit": _env("OFFERWALLME_REWARD_UNIT", "points"),
+        "offerwallme_currency_per_usd": _env("OFFERWALLME_CURRENCY_PER_USD", "200"),
         "offerwallme_user_reward_percent": _env("OFFERWALLME_USER_REWARD_PERCENT", "40"),
         "reward_points_per_usd": _env("REWARD_POINTS_PER_USD", "1000"),
     }
