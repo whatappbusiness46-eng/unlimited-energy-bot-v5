@@ -10,7 +10,7 @@
 8. Configure the postback secret/signature exactly as documented.
 9. Test one provider conversion in a controlled/test environment.
 10. Verify: provider callback -> duplicate check -> MongoDB event -> user balance -> transaction.
-11. Configure ShrtFly/ShrinkMe using their current official API documentation.
+11. Configure Offerwall.me offers/tasks/shortlinks and verified postback.
 12. Do not credit users merely because they clicked a shortlink or pressed Verify.
 13. Test withdrawal/admin approval before public launch.
 

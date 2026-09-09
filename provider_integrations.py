@@ -18,6 +18,30 @@ from database import db, add_balance, add_activity, get_user, record_transaction
 
 logger = logging.getLogger(__name__)
 
+_PROVIDER_CACHE_TTL = max(10, int(os.getenv("PROVIDER_LIST_CACHE_TTL_SECONDS", "45")))
+_provider_cache = {}
+
+def _cache_get(key):
+    entry = _provider_cache.get(key)
+    if not entry:
+        return None
+    if time.time() - float(entry.get("ts", 0)) >= _PROVIDER_CACHE_TTL:
+        _provider_cache.pop(key, None)
+        return None
+    return list(entry.get("items", []))
+
+def _cache_set(key, items):
+    _provider_cache[key] = {"ts": time.time(), "items": list(items)}
+    return list(items)
+
+def _cache_clear(prefix=None, user_id=None):
+    if prefix is None:
+        _provider_cache.clear()
+        return
+    for key in list(_provider_cache):
+        if key[0] == prefix and (user_id is None or key[1] == int(user_id)):
+            _provider_cache.pop(key, None)
+
 provider_offers = db["provider_offers"]
 provider_events = db["provider_events"]
 provider_disabled_offers = db["provider_disabled_offers"]
@@ -252,6 +276,10 @@ def _offerwallme_form_request(endpoint: str, params: Dict[str, Any]):
 def get_offerwallme_offers(user_id: int):
     if not _enabled("offerwallme"):
         return []
+    cache_key = ("offerwallme_offers", int(user_id))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     payload = _offerwallme_request(
         _env("OFFERWALLME_OFFERS_API_URL", "https://offerwall.me/offerapi.php"),
         user_id,
@@ -275,7 +303,7 @@ def get_offerwallme_offers(user_id: int):
             "platform": str(_first(raw, ("devices", "device", "platform"), "") or ""),
             "updated_at": int(time.time()),
         })
-    return result
+    return _cache_set(cache_key, result)
 
 
 def sync_offerwallme_offers(user_id: int) -> int:
@@ -292,6 +320,10 @@ def sync_offerwallme_offers(user_id: int) -> int:
 def get_offerwallme_tasks(user_id: int):
     if not _enabled("offerwallme"):
         return []
+    cache_key = ("offerwallme_tasks", int(user_id))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     payload = _offerwallme_request(
         _env("OFFERWALLME_TASKS_API_URL", "https://offerwall.me/taskapi.php"),
         user_id,
@@ -329,7 +361,7 @@ def get_offerwallme_tasks(user_id: int):
                 url=str(task_url or ""),
             )
         )
-    return result
+    return _cache_set(cache_key, result)
 
 
 def submit_offerwallme_task_proof(user_id: int, task_id: str, proof: str):
@@ -383,6 +415,10 @@ def submit_offerwallme_task_proof(user_id: int, task_id: str, proof: str):
 def get_offerwallme_shortlinks(user_id: int):
     if not _enabled("offerwallme"):
         return []
+    cache_key = ("offerwallme_shortlinks", int(user_id))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     payload = _offerwallme_request(
         _env("OFFERWALLME_SHORTLINKS_API_URL", "https://offerwall.me/slapi.php"),
         user_id,
@@ -495,7 +531,7 @@ def _normalise_offer(raw, user_id):
     if not offer_id or not url:
         return None
     try:
-        payout = float(_first(raw, ("reward", "payout", "amount", "points"), 0))
+        payout = float(_first(raw, ("payout", "amount", "revenue", "commission", "reward"), 0))
     except (TypeError, ValueError):
         payout = 0.0
     return {
@@ -540,14 +576,16 @@ def sync_cpagrip_offers(user_id: int) -> int:
             offer = _normalise_offer(raw, user_id)
             if not offer:
                 continue
-            provider_offers.update_one(
-                {"provider": "cpagrip", "offer_id": offer["offer_id"]},
-                {"$set": offer},
-                upsert=True,
-            )
+            key = {"provider": "cpagrip", "offer_id": offer["offer_id"]}
+            existing = provider_offers.find_one(key, {"_id": 0, "custom_reward_locked": 1}) or {}
+            update = {"$set": offer}
+            if not existing.get("custom_reward_locked", False):
+                update["$unset"] = {"custom_reward_points": ""}
+            provider_offers.update_one(key, update, upsert=True)
             count += 1
         if count == 0:
             logger.warning("CPAGrip feed returned no parseable offers | user=%s | url=%s", user_id, url.split("?")[0])
+        _cache_clear("cpagrip_offers", user_id)
         return count
     except Exception:
         logger.exception("CPAGrip offer sync failed | user=%s", user_id)
@@ -555,27 +593,19 @@ def sync_cpagrip_offers(user_id: int) -> int:
 
 
 def get_provider_offers(user_id: int, providers: Optional[Iterable[str]] = None):
-    providers = [p.lower() for p in (providers or ("cpagrip", "offerwallme"))]
-    providers = [p for p in providers if p in {"cpagrip", "offerwallme"} and _enabled(p)]
-    if "cpagrip" in providers:
-        sync_cpagrip_offers(user_id)
-    if "offerwallme" in providers:
-        sync_offerwallme_offers(user_id)
+    providers = [p.lower() for p in (providers or ("cpagrip",))]
+    providers = [p for p in providers if p == "cpagrip" and _enabled(p)]
     if not providers:
         return []
-    disabled = {
-        (str(x.get("provider")), str(x.get("offer_id")))
-        for x in provider_disabled_offers.find(
-            {"provider": {"$in": providers}}, {"provider": 1, "offer_id": 1}
-        )
-    }
-    docs = provider_offers.find(
-        {"provider": {"$in": providers}}, {"_id": 0}
-    ).sort("updated_at", -1).limit(100)
-    return [
-        dict(x) for x in docs
-        if (str(x.get("provider")), str(x.get("offer_id"))) not in disabled
-    ]
+    cache_key = ("cpagrip_offers", int(user_id))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    for provider in providers:
+        sync_cpagrip_offers(user_id)
+    disabled = {str(x["offer_id"]) for x in provider_disabled_offers.find({"provider": {"$in": providers}}, {"offer_id": 1})}
+    docs = provider_offers.find({"provider": {"$in": providers}}, {"_id": 0}).sort("updated_at", -1).limit(100)
+    return _cache_set(cache_key, [dict(x) for x in docs if str(x.get("offer_id")) not in disabled])
 
 
 def set_provider_offer_enabled(provider: str, offer_id: str, enabled: bool):
@@ -899,59 +929,6 @@ def process_postback(provider: str, params: Dict[str, Any]):
 
 
 
-def shorten_with_provider(provider: str, long_url: str, alias: str = "", ad_type: int = 1) -> dict:
-    """Create a short URL using the documented ShrtFly or ShrinkMe API.
-
-    This only creates/returns the short URL. Neither provider's documented
-    API supplies a completion callback, so this function never credits a user.
-    """
-    provider = str(provider or "").strip().lower()
-    long_url = str(long_url or "").strip()
-    alias = str(alias or "").strip()
-    if not long_url:
-        return {"ok": False, "error": "missing_url"}
-
-    if provider == "shrtfly":
-        token = _env("SHRTFLY_API_TOKEN")
-        endpoint = _env("SHRTFLY_API_URL", "https://shrtfly.com/api")
-        if not token:
-            return {"ok": False, "error": "missing_shrtfly_token"}
-        params = {"api": token, "type": int(ad_type or 1), "url": long_url, "format": "json"}
-        if alias:
-            params["alias"] = alias
-        try:
-            payload = _json_request(endpoint, params=params)
-            if isinstance(payload, dict) and payload.get("status") == "success":
-                result = payload.get("result") or {}
-                short = result.get("shorten_url")
-                if short:
-                    return {"ok": True, "provider": provider, "short_url": short, "raw": payload}
-            return {"ok": False, "provider": provider, "error": str((payload or {}).get("result", "API error")) if isinstance(payload, dict) else "API error", "raw": payload}
-        except Exception as exc:
-            logger.exception("ShrtFly API failed")
-            return {"ok": False, "provider": provider, "error": str(exc)}
-
-    if provider == "shrinkme":
-        token = _env("SHRINKME_API_KEY")
-        endpoint = _env("SHRINKME_API_URL", "https://shrinkme.io/api")
-        if not token:
-            return {"ok": False, "error": "missing_shrinkme_token"}
-        params = {"api": token, "url": long_url, "format": "json"}
-        if alias:
-            params["alias"] = alias
-        try:
-            payload = _json_request(endpoint, params=params)
-            if isinstance(payload, dict) and payload.get("status") == "success":
-                short = payload.get("shortenedUrl")
-                if short:
-                    return {"ok": True, "provider": provider, "short_url": short, "raw": payload}
-            message = payload.get("message", "API error") if isinstance(payload, dict) else "API error"
-            return {"ok": False, "provider": provider, "error": str(message), "raw": payload}
-        except Exception as exc:
-            logger.exception("ShrinkMe API failed")
-            return {"ok": False, "provider": provider, "error": str(exc)}
-
-    return {"ok": False, "error": "unsupported_provider"}
 
 def provider_status():
     return {

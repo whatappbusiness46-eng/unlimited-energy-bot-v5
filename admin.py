@@ -15,7 +15,6 @@ from provider_integrations import (
     get_provider_offers,
     set_provider_offer_enabled,
     delete_provider_offer,
-    shorten_with_provider,
     provider_events,
 )
 
@@ -919,7 +918,7 @@ async def admin_shortlinks(update, context):
         "🔗 **SHORTLINK MANAGEMENT**\n\n"
         f"Configured: {len(items)}\n\n"
         "Add format: `id|name|url|reward|cooldown|provider`\n"
-        "Example: `sl1|Example|https://example.com/go|0|86400|shrtfly`",
+        "Example: `sl1|Example|https://example.com/go|0|86400`",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown",
     )
@@ -936,7 +935,7 @@ async def admin_add_shortlink(update, context):
     await query.edit_message_text(
         "🔗 **ADD SHORTLINK**\n\n"
         "Send: `id|name|url|reward|cooldown`\n\n"
-        "Example: `sl1|Example|https://example.com/go|0|86400|shrtfly`",
+        "Example: `sl1|Example|https://example.com/go|0|86400`",
         reply_markup=admin_back(),
         parse_mode="Markdown",
     )
@@ -2816,7 +2815,7 @@ async def admin_text_handler(
             return True
         db["provider_offers"].update_one(
             {"provider": "cpagrip", "offer_id": oid},
-            {"$set": {"custom_reward_points": reward}}
+            {"$set": {"custom_reward_points": reward, "custom_reward_locked": True}}
         )
         context.user_data.clear()
         await update.message.reply_text(f"✅ Member reward set to {reward} points.", reply_markup=admin_back())
@@ -2848,19 +2847,6 @@ async def admin_text_handler(
             await update.message.reply_text("❌ Invalid shortlink values.", reply_markup=admin_back())
             return True
         final_url = url
-        if provider in {"shrtfly", "shrinkme"}:
-            result = shorten_with_provider(provider, url, alias=sid, ad_type=1)
-            if not result.get("ok"):
-                await update.message.reply_text(
-                    f"❌ {provider.title()} API failed: {result.get('error', 'unknown error')}",
-                    reply_markup=admin_back(),
-                )
-                return True
-            final_url = result["short_url"]
-            # These APIs document link creation, not verified completion.
-            # Keep reward at zero unless a compliant server-to-server reward
-            # mechanism is separately documented/configured.
-            reward = 0
         if not register_shortlink(sid, name, final_url, reward=reward, cooldown=cooldown):
             await update.message.reply_text("❌ Could not save shortlink.", reply_markup=admin_back())
             return True
@@ -3559,13 +3545,13 @@ async def admin_provider_payouts(update, context):
 
         live_cpagrip = list(db["provider_offers"].find(
             {"provider": "cpagrip"},
-            {"_id": 0, "offer_id": 1, "title": 1, "custom_title": 1, "provider_reward": 1, "custom_reward_points": 1},
+            {"_id": 0, "offer_id": 1, "title": 1, "custom_title": 1, "provider_reward": 1, "custom_reward_points": 1, "custom_reward_locked": 1},
         ).sort("updated_at", -1).limit(10))
         if live_cpagrip:
             for item in live_cpagrip:
                 title = str(item.get("custom_title") or item.get("title") or "Offer")[:36]
                 payout = float(item.get("provider_reward") or 0)
-                auto_points = int(item.get("custom_reward_points") or 0) or int(__import__("provider_integrations")._reward_points(payout))
+                auto_points = (int(item.get("custom_reward_points") or 0) if item.get("custom_reward_locked") else int(__import__("provider_integrations")._reward_points(payout)))
                 text += f"• `{title}` — payout `${payout:.2f}` → member `+{auto_points}` pts\n"
         else:
             text += "No cached CPAGrip offers found.\n"
@@ -3647,7 +3633,7 @@ async def admin_cpagrip_offers(update, context):
             continue
         state = "🔴" if oid in disabled else "🟢"
         title = str(item.get("custom_title") or item.get("title", oid))[:22]
-        reward = int(item.get("custom_reward_points") or 0)
+        reward = (int(item.get("custom_reward_points") or 0) if item.get("custom_reward_locked") else 0)
         buttons.append([
             InlineKeyboardButton(f"{state} {title}", callback_data=f"admin_cpa_toggle_{oid}"[:64]),
             InlineKeyboardButton("✏️ Name", callback_data=f"admin_cpa_name_{oid}"[:64]),

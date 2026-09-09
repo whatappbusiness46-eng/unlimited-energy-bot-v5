@@ -12,10 +12,7 @@
 - CPAGrip conversion credit requires the configured postback password and is idempotent.
 - Admin can hide/delete cached CPAGrip offers.
 - Admin-managed Shortlinks with cooldown and enable/disable/delete.
-- ShrtFly/ShrinkMe API link creation is supported when their exact API URL/token are configured.
 
-## Important provider limitation
-ShrtFly/ShrinkMe link creation does not itself prove that a user completed a monetized conversion. The bot therefore must not award a provider reward merely because a user presses a client-side Verify button. Use a provider-supported server-to-server completion mechanism before enabling automatic rewards for a provider.
 
 ## CPAGrip setup
 1. Put the real CPAGrip API key, offer-feed URL, and Global Postback password in Render Environment Variables.

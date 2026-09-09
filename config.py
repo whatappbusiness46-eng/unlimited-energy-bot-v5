@@ -416,17 +416,8 @@ CPAGRIP_API_KEY = os.getenv("CPAGRIP_API_KEY", "")
 CPAGRIP_OFFERS_API_URL = os.getenv("CPAGRIP_OFFERS_API_URL", "")
 CPAGRIP_POSTBACK_PASSWORD = os.getenv("CPAGRIP_POSTBACK_PASSWORD", os.getenv("CPAGRIP_POSTBACK_SECRET", ""))
 
-# Shortlink providers.
-# Their exact API URL/parameter contract must be copied from the provider
-# documentation; the bot never guesses an undocumented endpoint.
-SHRTFLY_ENABLED = os.getenv("SHRTFLY_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
-SHRTFLY_API_TOKEN = os.getenv("SHRTFLY_API_TOKEN", "")
-SHRTFLY_API_URL = os.getenv("SHRTFLY_API_URL", "")
-
-SHRINKME_ENABLED = os.getenv("SHRINKME_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
-SHRINKME_API_KEY = os.getenv("SHRINKME_API_KEY", "")
-SHRINKME_API_URL = os.getenv("SHRINKME_API_URL", "")
-
+# Manual shortlinks and Offerwall.me shortlinks are supported.
+# Legacy shortener integrations have been removed.
 CONFIG_READY = True
 
 CPAGRIP_USER_REWARD_PERCENT = float(os.getenv("CPAGRIP_USER_REWARD_PERCENT", "40"))

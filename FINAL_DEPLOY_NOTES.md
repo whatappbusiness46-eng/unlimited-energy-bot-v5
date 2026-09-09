@@ -1,11 +1,9 @@
 # Final deployment notes
 
-Providers configured from the supplied official documentation:
+Providers configured for this build:
 - CPAGrip offer feed + password-protected global postback
-- ShrtFly Developer API (`https://shrtfly.com/api`)
-- ShrinkMe Developers API (`https://shrinkme.io/api`)
+- Offerwall.me offers/tasks/shortlinks + verified postback
 
-Important: ShrtFly and ShrinkMe documentation supplied for this build only documents link creation. It does not document a server-to-server completion callback. Therefore the bot does **not** award points merely because a ShrtFly/ShrinkMe short link was created or clicked.
 
 Required Render variables:
 - BOT_TOKEN
@@ -16,13 +14,17 @@ Required Render variables:
 - CPAGRIP_API_KEY
 - CPAGRIP_OFFERS_API_URL
 - CPAGRIP_POSTBACK_PASSWORD
-- REWARD_POINTS_PER_USD
-- SHRTFLY_ENABLED=true
-- SHRTFLY_API_TOKEN
-- SHRTFLY_API_URL=https://shrtfly.com/api
-- SHRINKME_ENABLED=true
-- SHRINKME_API_KEY
-- SHRINKME_API_URL=https://shrinkme.io/api
+- REWARD_POINTS_PER_USD=1000
+- CPAGRIP_USER_REWARD_PERCENT=40
+- CPAGRIP_DEFAULT_USER_REWARD_POINTS=200
+- OFFERWALLME_ENABLED=true
+- OFFERWALLME_API_KEY
+- OFFERWALLME_BEARER_TOKEN
+- OFFERWALLME_POSTBACK_SECRET
+- OFFERWALLME_USER_REWARD_PERCENT=40
+- OFFERWALLME_REWARD_UNIT=points
+- OFFERWALLME_POINTS_PER_USD=1000
+- OFFERWALLME_CURRENCY_PER_USD=200
 
 CPAGrip postback URL:
 `https://unlimited-energy-bot-v5.onrender.com/cpagrip/postback`

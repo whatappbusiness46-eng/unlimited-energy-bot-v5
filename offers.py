@@ -93,6 +93,15 @@ def _live_offers(user_id: int) -> list:
         return []
 
 
+def _member_reward(item):
+    if item.get("custom_reward_locked"):
+        try:
+            return max(0, int(item.get("custom_reward_points", 0)))
+        except (TypeError, ValueError):
+            pass
+    return max(0, int(_reward_points(item.get("provider_reward", 0))))
+
+
 def offers_menu(user_id: int):
     keyboard = []
     live = _live_offers(user_id)
@@ -101,7 +110,7 @@ def offers_menu(user_id: int):
         provider = str(item.get("provider", "provider"))
         offer_id = str(item.get("offer_id", ""))
         title = str(item.get("custom_title") or item.get("title") or "Special Offer")
-        reward = int(item.get("custom_reward_points") if item.get("custom_reward_points") is not None else _reward_points(item.get("provider_reward", 0)))
+        reward = _member_reward(item)
         label = f"🎁 {title[:28]} • +{reward} pts"
         callback = f"provider_offer_{_provider_offer_key(provider, offer_id)}"
         if len(callback) <= 64:
@@ -204,7 +213,7 @@ async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_
 
     title = html_escape(str(offer.get("custom_title") or offer.get("title") or "Offer"))
     description = html_escape(str(offer.get("description") or "")).strip()
-    reward_points = int(offer.get("custom_reward_points") or _reward_points(offer.get("provider_reward", 0)) or 200)
+    reward_points = _member_reward(offer) or 200
     if reward_points <= 0:
         reward_points = 200
     # Provider payout is intentionally hidden from members. Member-facing reward is fixed/configured.

@@ -4,7 +4,7 @@ Existing bot with the Phase 1–19 application features retained.
 
 ## Monetization scope
 - CPAGrip live offers with verified server-to-server postback.
-- ShrtFly and ShrinkMe shortlinks can be managed from the Admin panel.
+- Offerwall.me shortlinks and manual shortlinks can be managed from the Admin panel.
 - Manual client-side offer claiming is disabled.
 
 ## Admin
