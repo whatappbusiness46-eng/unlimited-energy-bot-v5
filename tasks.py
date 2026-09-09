@@ -39,6 +39,12 @@ TASK_VERIFICATION_ENABLED = os.getenv("TASK_VERIFICATION_ENABLED", "false").stri
 # The bot must be an admin/member of that private channel to verify membership.
 TASK_PRIVATE_CHAT_ID = os.getenv("TASK_PRIVATE_CHAT_ID", "").strip()
 
+# Short per-user cache prevents the Task Center from fetching the same
+# Offerwall.me task list twice during one screen render and reduces repeated
+# provider calls when a user opens Tasks again shortly afterwards.
+_OFFERWALL_TASK_CACHE = {}
+_OFFERWALL_TASK_CACHE_TTL = 45
+
 
 def _now():
     return int(time.time())
@@ -470,14 +476,39 @@ async def complete_task_async(user_id, task_id, bot):
     return True, "OK"
 
 
-def tasks_menu(user_id=None):
+def _get_offerwall_tasks_cached(user_id):
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return []
+    now = _now()
+    cached = _OFFERWALL_TASK_CACHE.get(uid)
+    if cached and now - cached.get("ts", 0) < _OFFERWALL_TASK_CACHE_TTL:
+        return list(cached.get("tasks", []))
+    try:
+        tasks = list(get_offerwallme_tasks(uid) or [])
+    except Exception:
+        logger.exception("Offerwall.me task fetch failed | user=%s", uid)
+        tasks = []
+    _OFFERWALL_TASK_CACHE[uid] = {"ts": now, "tasks": tasks}
+    # Keep this small so long-running bots do not accumulate one entry per user.
+    if len(_OFFERWALL_TASK_CACHE) > 200:
+        oldest = sorted(_OFFERWALL_TASK_CACHE.items(), key=lambda item: item[1].get("ts", 0))[:50]
+        for old_uid, _ in oldest:
+            _OFFERWALL_TASK_CACHE.pop(old_uid, None)
+    return list(tasks)
+
+
+def tasks_menu(user_id=None, offerwall_tasks=None):
     buttons=[]
     for task in get_tasks(user_id=user_id):
         available = task_available(user_id, task["id"]) if user_id else True
         buttons.append([InlineKeyboardButton(f"{'🎯' if available else '✅'} {_md(task.get('title',''))} (+{_safe_int(task.get('reward'),0)})", callback_data=f"task_{task['id']}")])
     if user_id:
         try:
-            for task in get_offerwallme_tasks(user_id)[:OFFERWALLME_TASK_LIMIT]:
+            if offerwall_tasks is None:
+                offerwall_tasks = _get_offerwall_tasks_cached(user_id)
+            for task in offerwall_tasks[:OFFERWALLME_TASK_LIMIT]:
                 task_id = str(task.get("id") or "")
                 title = str(task.get("title") or "Offerwall Task")
                 reward = _offerwallme_reward_points(task.get("reward", task.get("payout", task.get("amount", 0))), user_id)
@@ -497,11 +528,7 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db_user or db_user.get("banned") or db_user.get("blacklisted"):
         await message.reply_text("🚫 Your account is restricted."); return
     task_list=get_tasks(user_id=user.id); count,_=_daily_count(db_user); settings=db["bot_settings"].find_one({"_id":"main"}) or {}; limit=max(1,_safe_int(settings.get("daily_task_limit"),20))
-    try:
-        offerwall_tasks = get_offerwallme_tasks(user.id)
-    except Exception:
-        logger.exception("Offerwall.me task fetch failed | user=%s", user.id)
-        offerwall_tasks = []
+    offerwall_tasks = _get_offerwall_tasks_cached(user.id)
     normal=[t for t in task_list if t.get("audience","normal") in {"normal","both"}]
     vip=[t for t in task_list if t.get("audience","normal") in {"vip","both"}]
     if not task_list and not offerwall_tasks:
@@ -527,7 +554,7 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("")
         lines.append("For click-only tasks, Telegram cannot prove that the URL was actually opened; the Claim button records one completion per user. Do not use click-only rewards for ad-provider links unless that provider explicitly permits incentivized traffic.")
         text="\n".join(lines)
-    await message.reply_text(text, reply_markup=tasks_menu(user.id), parse_mode="Markdown")
+    await message.reply_text(text, reply_markup=tasks_menu(user.id, offerwall_tasks=offerwall_tasks), parse_mode="Markdown")
 
 
 async def task_callback(update, context):
@@ -568,7 +595,7 @@ async def offerwallme_task_callback(update, context):
     await q.answer()
     task_id = str(q.data)[len("owtask_"):]
     try:
-        tasks = get_offerwallme_tasks(q.from_user.id)
+        tasks = _get_offerwall_tasks_cached(q.from_user.id)
     except Exception:
         tasks = []
     task = next((t for t in tasks if str(t.get("id")) == task_id), None)
