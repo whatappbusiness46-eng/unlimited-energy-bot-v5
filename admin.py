@@ -3173,13 +3173,15 @@ async def admin_maintenance(update, context):
         "Safe tools for slow-bot situations.\n\n"
         "🟢 **Optimize indexes** — improves common DB lookups.\n"
         "🧹 **Clean old logs/stats** — removes only disposable operational data.\n"
-        "⚠️ **Reset member wallets** — sets Balance, Bonus Balance and Premium Balance to 0.\n\n"
-        "👥 User accounts, task completion history, withdrawals, payments and provider conversion records are NOT deleted."
+        "⚠️ **Reset member wallets** — sets Balance, Bonus Balance and Premium Balance to 0.\n"
+        "☢️ **Factory reset** — permanently clears member/activity/earning/payment history while keeping bot configuration, tasks, shortlinks, Force Join and provider settings.\n\n"
+        "👥 User accounts, task definitions, shortlink definitions and bot/provider configuration are preserved unless the factory reset is explicitly confirmed."
     )
     buttons = [
         [InlineKeyboardButton("⚡ Optimize DB Indexes", callback_data="admin_maintenance_indexes")],
         [InlineKeyboardButton("🧹 Clean Old Logs/Stats", callback_data="admin_maintenance_clean")],
         [InlineKeyboardButton("⚠️ Reset ALL Member Wallets", callback_data="admin_maintenance_reset_confirm")],
+        [InlineKeyboardButton("☢️ FACTORY RESET — DELETE ALL DATA", callback_data="admin_factory_reset_confirm")],
         [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")],
     ]
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
@@ -3209,6 +3211,85 @@ async def admin_maintenance_reset(update, context):
     except Exception:
         logger.exception("Member wallet reset failed")
         await q.answer("❌ Wallet reset failed.", show_alert=True)
+
+
+# Data collections intentionally cleared by the factory reset.
+# Configuration collections (bot_settings, tasks, shortlinks, provider_disabled_offers,
+# and provider_offers) are preserved so the bot does not need to be configured again.
+_FACTORY_RESET_COLLECTIONS = (
+    "users",
+    "transactions",
+    "withdrawals",
+    "membership_payments",
+    "security_logs",
+    "daily_statistics",
+    "task_completions",
+    "provider_events",
+    "offerwall_task_proofs",
+    "offerwall_task_submissions",
+    "referral_claims",
+    "referral_milestone_claims",
+)
+
+
+async def admin_factory_reset_confirm(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id):
+        if q:
+            await q.answer("🚫 Admin only.", show_alert=True)
+        return
+    await q.answer()
+    buttons = [
+        [InlineKeyboardButton("❌ Cancel", callback_data="admin_maintenance")],
+        [InlineKeyboardButton("☢️ YES, START FRESH", callback_data="admin_factory_reset")],
+    ]
+    await q.edit_message_text(
+        "☢️ **FACTORY RESET — FINAL CONFIRMATION**\n\n"
+        "This permanently deletes **member accounts and all member/activity/earning/payment history** from the database.\n\n"
+        "It clears:\n"
+        "• Users / balances / VIP & premium state\n"
+        "• Transactions / withdrawals / membership payments\n"
+        "• Task completion history\n"
+        "• Provider conversion/event history\n"
+        "• Offerwall task submissions & proof records\n"
+        "• Referral claim history\n"
+        "• Security logs & daily statistics\n\n"
+        "✅ Preserved: Admin ID/config, Force Join, bot settings, configured tasks, shortlinks, provider settings and offer configuration.\n\n"
+        "**This cannot be undone. Continue?**",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="Markdown",
+    )
+
+
+async def admin_factory_reset(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id):
+        if q:
+            await q.answer("🚫 Admin only.", show_alert=True)
+        return
+    try:
+        counts = {}
+        for name in _FACTORY_RESET_COLLECTIONS:
+            result = db[name].delete_many({})
+            counts[name] = int(getattr(result, "deleted_count", 0))
+
+        total = sum(counts.values())
+        await q.answer("☢️ Factory reset complete.", show_alert=True)
+        await q.edit_message_text(
+            "☢️ **FACTORY RESET COMPLETE**\n\n"
+            f"Deleted database records: **{total}**\n\n"
+            "✅ Member accounts/history cleared.\n"
+            "✅ Provider conversion history cleared.\n"
+            "✅ Payment/withdrawal history cleared.\n"
+            "✅ Referral/task activity history cleared.\n\n"
+            "🔒 Bot configuration, Force Join, configured tasks, shortlinks and provider settings were preserved.\n\n"
+            "The bot is now ready to start fresh with the next user interaction.",
+            reply_markup=admin_back(),
+            parse_mode="Markdown",
+        )
+    except Exception:
+        logger.exception("Factory reset failed")
+        await q.answer("❌ Factory reset failed. No further action was taken.", show_alert=True)
 
 
 async def admin_maintenance_clean(update, context):
@@ -3320,6 +3401,10 @@ async def admin_callback(
         await admin_maintenance_reset_confirm(update, context); return
     if data == "admin_maintenance_reset":
         await admin_maintenance_reset(update, context); return
+    if data == "admin_factory_reset_confirm":
+        await admin_factory_reset_confirm(update, context); return
+    if data == "admin_factory_reset":
+        await admin_factory_reset(update, context); return
     if data == "admin_maintenance_clean":
         await admin_maintenance_clean(update, context); return
     if data == "admin_maintenance_indexes":
