@@ -16,6 +16,7 @@ from provider_integrations import (
     set_provider_offer_enabled,
     delete_provider_offer,
     shorten_with_provider,
+    provider_events,
 )
 
 from payments import pending as pending_payments, get_payment, approve_payment, reject_payment
@@ -56,6 +57,7 @@ from database import (
     maintenance_cleanup_old_data,
     maintenance_optimize_indexes,
 )
+
 
 
 logger = logging.getLogger(__name__)
@@ -171,6 +173,13 @@ def admin_menu():
             InlineKeyboardButton(
                 "🎁 CPAGrip Offers",
                 callback_data="admin_cpagrip_offers",
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "💵 Provider Payouts",
+                callback_data="admin_provider_payouts",
             )
         ],
 
@@ -3314,6 +3323,7 @@ async def admin_callback(
         "admin_add_shortlink": admin_add_shortlink,
         "admin_cpagrip_offers": admin_cpagrip_offers,
         "admin_cpagrip_refresh": admin_cpagrip_refresh,
+        "admin_provider_payouts": admin_provider_payouts,
         "admin_withdrawals": admin_withdrawals,
         "admin_vip_toggle": admin_vip_toggle,
         "admin_premium_on": admin_premium_on,
@@ -3477,6 +3487,87 @@ ADMIN_HANDLERS = {
     "admin_callback": admin_callback,
     "admin_text_handler": admin_text_handler,
 }# ==================================================
+# PROVIDER PAYOUTS / CONVERSIONS
+# ==================================================
+
+async def admin_provider_payouts(update, context):
+    query = update.callback_query
+    if not query or not admin_only(query.from_user.id):
+        if query:
+            await query.answer("🚫 Admin only.", show_alert=True)
+        return
+
+    await query.answer()
+
+    try:
+        rows = list(provider_events.find({}, {"_id": 0}).sort("received_at", -1).limit(25))
+        stats = {}
+        for provider in ("offerwallme", "cpagrip"):
+            items = [r for r in rows if str(r.get("provider", "")).lower() == provider]
+            # Use all stored events for totals, not just the latest 25.
+            all_items = list(provider_events.find({"provider": provider}, {"_id": 0}))
+            active = [r for r in all_items if str(r.get("status", "1")) not in {"2", "reversed", "chargeback", "reject", "rejected"}]
+            try:
+                provider_total = sum(float(r.get("reward_raw", 0) or 0) for r in active)
+            except (TypeError, ValueError):
+                provider_total = 0.0
+            user_points = sum(int(r.get("points", 0) or 0) for r in active)
+            stats[provider] = (len(active), provider_total, user_points)
+
+        ow_count, ow_total, ow_points = stats["offerwallme"]
+        cp_count, cp_total, cp_points = stats["cpagrip"]
+
+        text = (
+            "💵 **PROVIDER PAYOUTS**\n\n"
+            "This section is **admin-only**. It shows provider-side reward values received by the bot and the points credited to members.\n\n"
+            "🟣 **Offerwall.me**\n"
+            f"• Conversions: `{ow_count}`\n"
+            f"• Provider reward total: `${ow_total:.2f}`\n"
+            f"• Member points credited: `{ow_points}`\n"
+            f"• User reward share: `{_admin_env('OFFERWALLME_USER_REWARD_PERCENT', '40')}%`\n"
+            f"• Points per USD: `{_admin_env('OFFERWALLME_POINTS_PER_USD', '1000')}`\n\n"
+            "🟠 **CPAGrip**\n"
+            f"• Conversions: `{cp_count}`\n"
+            f"• Provider reward total (raw): `{cp_total:g}`\n"
+            f"• Member points credited: `{cp_points}`\n\n"
+            "📋 **Latest conversions**\n"
+        )
+
+        if not rows:
+            text += "No provider conversions recorded yet."
+        else:
+            for r in rows[:15]:
+                provider = str(r.get("provider", "?")).upper()
+                event_id = str(r.get("event_id", ""))[:18]
+                user_id = str(r.get("user_id", ""))
+                reward = str(r.get("reward_raw", "0"))
+                points = int(r.get("points", 0) or 0)
+                status = str(r.get("status", "1"))
+                text += f"• `{provider}` | U:{user_id} | Reward:{reward} | +{points} pts | {status} | `{event_id}`\n"
+
+        await query.edit_message_text(
+            text[:4000],
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Refresh", callback_data="admin_provider_payouts")],
+                [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")],
+            ]),
+            parse_mode="Markdown",
+        )
+    except Exception:
+        logger.exception("Admin provider payout view failed")
+        await query.edit_message_text(
+            "❌ **Provider payout data unavailable right now.**",
+            reply_markup=admin_back(),
+            parse_mode="Markdown",
+        )
+
+
+def _admin_env(name, default=""):
+    import os
+    return os.getenv(name, default)
+
+
+# ==================================================
 # CPAGRIP OFFER MANAGEMENT
 # ==================================================
 
