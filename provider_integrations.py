@@ -543,18 +543,14 @@ def _offerwallme_reward_points(reward_raw: Any, user_id: int = None) -> int:
     try:
         reward = Decimal(str(reward_raw))
         share = Decimal(_env("OFFERWALLME_USER_REWARD_PERCENT", "40"))
-        unit = _env("OFFERWALLME_REWARD_UNIT", "points").lower()
-        rate = Decimal(_env("OFFERWALLME_POINTS_PER_USD", "1000"))
+        # The current Offerwall.me placement currency is Points. Treat the
+        # postback `reward` as placement points directly; never multiply it
+        # by a points-per-USD rate. This prevents a value such as 246 Points
+        # from being misread as $246 (which would incorrectly become 49,200
+        # points before the member share).
         if reward <= 0 or share <= 0:
             return 0
-
-        if unit in {"usd", "dollar", "dollars"}:
-            if rate <= 0:
-                return 0
-            base_points = reward * rate
-        else:
-            # Offerwall.me placement currency is Points by default.
-            base_points = reward
+        base_points = reward
 
         points = int((base_points * share / Decimal("100")).quantize(Decimal("1")))
         if user_id is not None:
