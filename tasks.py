@@ -16,7 +16,10 @@ from database import (
     get_membership_multiplier, use_energy, add_xp,
 )
 from config import ADMIN_ID, OFFERWALLME_TASK_LIMIT
-from provider_integrations import get_offerwallme_tasks, submit_offerwallme_task_proof, _offerwallme_reward_points
+from provider_integrations import (
+    get_offerwallme_tasks, submit_offerwallme_task_proof, _offerwallme_reward_points,
+    create_offerwall_task_proof, get_offerwall_task_submission, mark_offerwall_task_submission,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +97,18 @@ def ensure_task_indexes():
             [("user_id", 1), ("status", 1)],
             unique=False,
             name="user_status_idx",
+        )
+        _ensure_named_index(
+            db["offerwall_task_submissions"],
+            [("user_id", 1), ("task_id", 1)],
+            unique=True,
+            name="offerwall_task_submission_unique",
+        )
+        _ensure_named_index(
+            db["offerwall_task_submissions"],
+            [("user_id", 1), ("status", 1), ("submitted_at", -1)],
+            unique=False,
+            name="offerwall_task_submission_status",
         )
         return True
     except Exception:
@@ -602,6 +617,8 @@ async def offerwallme_task_callback(update, context):
     if not task:
         await q.edit_message_text("⚠️ This Offerwall.me task is no longer available.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks", callback_data="tasks")]]))
         return
+    submission = get_offerwall_task_submission(q.from_user.id, task_id)
+    submission_status = str((submission or {}).get("status") or "").lower()
     reward = _offerwallme_reward_points(task.get("reward"), q.from_user.id)
     def _display_text(value):
         return (str(value or "").replace("\\n", "\n").replace("<p>", "").replace("</p>", "").strip())
@@ -622,7 +639,12 @@ async def offerwallme_task_callback(update, context):
     task_url = str(task.get("url") or task.get("link") or "").strip()
     if task_url:
         buttons.append([InlineKeyboardButton("🚀 Open Task", url=task_url)])
-    buttons.append([InlineKeyboardButton("📨 Submit Proof", callback_data=f"owtask_proof_{task_id}")])
+    if submission_status == "pending":
+        text += "\n\n🕒 **Status:** Your proof is currently under review. Please wait for verification."
+    elif submission_status == "rewarded":
+        text += "\n\n✅ **Status:** This task has already been verified and rewarded."
+    else:
+        buttons.append([InlineKeyboardButton("📨 Submit Proof", callback_data=f"owtask_proof_{task_id}")])
     buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
     await q.edit_message_text(
         text,
@@ -636,8 +658,15 @@ async def offerwallme_task_proof_callback(update, context):
     q = update.callback_query
     if not q or not str(q.data).startswith("owtask_proof_"):
         return
-    await q.answer()
     task_id = str(q.data)[len("owtask_proof_"):]
+    existing_submission = get_offerwall_task_submission(q.from_user.id, task_id)
+    if str((existing_submission or {}).get("status") or "").lower() == "pending":
+        await q.answer("🕒 Your proof is already under review.", show_alert=True)
+        return
+    if str((existing_submission or {}).get("status") or "").lower() == "rewarded":
+        await q.answer("✅ This task is already rewarded.", show_alert=True)
+        return
+    await q.answer()
     context.user_data["offerwallme_pending_task"] = task_id
     try:
         task = next((t for t in get_offerwallme_tasks(q.from_user.id) if str(t.get("id")) == task_id), {})
@@ -666,23 +695,42 @@ async def offerwallme_proof_message_handler(update, context):
         # photo to Telegram's HTTPS file URL before submitting proof.
         proof = f"telegram_photo_file_id:{photo.file_id}"
         try:
-            tg_file = await context.bot.get_file(photo.file_id)
-            file_path = str(getattr(tg_file, "file_path", "") or "").strip()
-            bot_token = os.getenv("BOT_TOKEN", "").strip()
-            if file_path and bot_token:
-                proof = f"proof_url:https://api.telegram.org/file/bot{bot_token}/{file_path}"
+            proof_url, _proof_id = create_offerwall_task_proof(update.effective_user.id, str(task_id), photo.file_id, caption)
+            proof = f"proof_url:{proof_url}"
         except Exception:
-            logger.exception("Could not resolve Telegram proof image | user=%s task=%s", update.effective_user.id, task_id)
-        if caption:
-            proof += f"\ncaption:{caption}"
+            logger.exception("Could not register secure Telegram proof proxy | user=%s task=%s", update.effective_user.id, task_id)
+            await update.effective_message.reply_text(
+                "❌ Image proof could not be prepared securely right now. Please try sending the screenshot again.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Tasks", callback_data="tasks")]]),
+            )
+            return True
     else:
         proof = str(message.text or "").strip()
     if not proof:
         return False
 
+    # Fetch the current task reward so the later verified postback can be matched
+    # to this pending submission without trusting client-supplied values.
+    provider_reward_raw = None
+    current_task = None
+    try:
+        current_tasks = _get_offerwall_tasks_cached(update.effective_user.id)
+        current_task = next((t for t in current_tasks if str(t.get("id")) == str(task_id)), None)
+        if current_task:
+            provider_reward_raw = str(current_task.get("reward"))
+    except Exception:
+        logger.exception("Could not resolve task reward before proof submit | user=%s task=%s", update.effective_user.id, task_id)
+
     result = submit_offerwallme_task_proof(update.effective_user.id, str(task_id), proof)
     if result.get("ok"):
         context.user_data.pop("offerwallme_pending_task", None)
+        mark_offerwall_task_submission(
+            update.effective_user.id, str(task_id), "pending",
+            submitted_at=_now(), provider_reward_raw=provider_reward_raw,
+            task_title=str((current_task or {}).get("title") or "")[:200],
+            provider_response=result.get("raw"), proof_kind="image" if message.photo else "text",
+            proof_text=proof[:2000],
+        )
         status = str(result.get("status") or "").strip().lower()
         if status in {"pending", "submitted", "received"}:
             reply = (

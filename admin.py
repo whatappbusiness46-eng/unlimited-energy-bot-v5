@@ -3324,7 +3324,6 @@ async def admin_callback(
         "admin_cpagrip_offers": admin_cpagrip_offers,
         "admin_cpagrip_refresh": admin_cpagrip_refresh,
         "admin_provider_payouts": admin_provider_payouts,
-        "admin_provider_payouts_clear_confirm": admin_provider_payouts_clear_confirm,
         "admin_provider_payouts_clear": admin_provider_payouts_clear,
         "admin_withdrawals": admin_withdrawals,
         "admin_vip_toggle": admin_vip_toggle,
@@ -3339,10 +3338,6 @@ async def admin_callback(
         await admin_maintenance_clean(update, context); return
     if data == "admin_maintenance_indexes":
         await admin_maintenance_indexes(update, context); return
-    if data == "admin_provider_payouts_clear_confirm":
-        await admin_provider_payouts_clear_confirm(update, context); return
-    if data == "admin_provider_payouts_clear":
-        await admin_provider_payouts_clear(update, context); return
 
     if data.startswith("admin_payment_view_"):
         await admin_payment_view(update, context); return
@@ -3496,6 +3491,25 @@ ADMIN_HANDLERS = {
 # PROVIDER PAYOUTS / CONVERSIONS
 # ==================================================
 
+async def admin_provider_payouts_clear(update, context):
+    query = update.callback_query
+    if not query or not admin_only(query.from_user.id):
+        if query:
+            await query.answer("🚫 Admin only.", show_alert=True)
+        return
+    await query.answer("🗑 Latest list cleared.")
+    try:
+        result = provider_events.update_many({"admin_hidden": {"$ne": True}}, {"$set": {"admin_hidden": True, "admin_hidden_at": int(time.time())}})
+        await query.edit_message_text(
+            f"✅ Cleared {int(result.modified_count)} conversion(s) from the admin latest list.\n\n"
+            "Provider event ledger was preserved, so duplicate protection and reversal handling remain safe.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💵 Provider Payouts", callback_data="admin_provider_payouts")], [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")]]),
+        )
+    except Exception:
+        logger.exception("Provider payout clear failed")
+        await query.edit_message_text("❌ Could not clear the latest conversion list.", reply_markup=admin_back())
+
+
 async def admin_provider_payouts(update, context):
     query = update.callback_query
     if not query or not admin_only(query.from_user.id):
@@ -3506,19 +3520,11 @@ async def admin_provider_payouts(update, context):
     await query.answer()
 
     try:
-        # Keep the provider event ledger intact for dedup/reversal handling.
-        # The admin clear action only hides the currently displayed history.
-        meta = db["provider_admin_meta"].find_one({"_id": "main"}) or {}
-        hidden_before = int(meta.get("history_hidden_before", 0) or 0)
-        rows = list(
-            provider_events.find(
-                {"received_at": {"$gt": hidden_before}},
-                {"_id": 0},
-            ).sort("received_at", -1).limit(50)
-        )
-
+        rows = list(provider_events.find({"admin_hidden": {"$ne": True}}, {"_id": 0}).sort("received_at", -1).limit(50))
         stats = {}
         for provider in ("offerwallme", "cpagrip"):
+            items = [r for r in rows if str(r.get("provider", "")).lower() == provider]
+            # Use all stored events for totals, not just the latest 25.
             all_items = list(provider_events.find({"provider": provider}, {"_id": 0}))
             active = [r for r in all_items if str(r.get("status", "1")) not in {"2", "reversed", "chargeback", "reject", "rejected"}]
             try:
@@ -3546,26 +3552,25 @@ async def admin_provider_payouts(update, context):
             f"• Conversions: `{cp_count}`\n"
             f"• Provider reward total (raw): `{cp_total:g}`\n"
             f"• Member points credited: `{cp_points}`\n\n"
-            "📋 **Latest 50 conversions**\n"
+            "📋 **Latest conversions**\n"
         )
 
         if not rows:
-            text += "No provider conversions recorded in the current history view."
+            text += "No provider conversions recorded yet."
         else:
-            for r in rows:
-                provider = str(r.get("provider", "?")).upper()
-                event_id = str(r.get("event_id", ""))[:14]
+            for r in rows[:50]:
+                provider = str(r.get("provider", "?")).upper()[:3]
+                event_id = str(r.get("event_id", ""))[:10]
                 user_id = str(r.get("user_id", ""))
-                reward = str(r.get("reward_raw", "0"))
+                reward = str(r.get("reward_raw", "0"))[:12]
                 points = int(r.get("points", 0) or 0)
-                status = str(r.get("status", "1"))
-                text += f"• `{provider[:3]}` | U:{user_id} | R:{reward} | +{points} | {status} | `{event_id}`\n"
+                status = str(r.get("status", "1"))[:8]
+                text += f"• `{provider}|U:{user_id}|R:{reward}|+{points}|{status}|{event_id}`\n"
 
         await query.edit_message_text(
             text[:4000],
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🗑 Clear List", callback_data="admin_provider_payouts_clear_confirm")],
-                [InlineKeyboardButton("🔄 Refresh", callback_data="admin_provider_payouts")],
+                [InlineKeyboardButton("🔄 Refresh", callback_data="admin_provider_payouts"), InlineKeyboardButton("🗑 Clear Latest List", callback_data="admin_provider_payouts_clear")],
                 [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")],
             ]),
             parse_mode="Markdown",
@@ -3574,44 +3579,6 @@ async def admin_provider_payouts(update, context):
         logger.exception("Admin provider payout view failed")
         await query.edit_message_text(
             "❌ **Provider payout data unavailable right now.**",
-            reply_markup=admin_back(),
-            parse_mode="Markdown",
-        )
-
-
-async def admin_provider_payouts_clear_confirm(update, context):
-    query = update.callback_query
-    if not query or not admin_only(query.from_user.id):
-        if query:
-            await query.answer("🚫 Admin only.", show_alert=True)
-        return
-    await query.answer()
-    await query.edit_message_reply_markup(
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Yes, Clear List", callback_data="admin_provider_payouts_clear")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="admin_provider_payouts")],
-        ])
-    )
-
-
-async def admin_provider_payouts_clear(update, context):
-    query = update.callback_query
-    if not query or not admin_only(query.from_user.id):
-        if query:
-            await query.answer("🚫 Admin only.", show_alert=True)
-        return
-    await query.answer("✅ Conversion list cleared.", show_alert=True)
-    try:
-        db["provider_admin_meta"].update_one(
-            {"_id": "main"},
-            {"$set": {"history_hidden_before": int(time.time())}},
-            upsert=True,
-        )
-        await admin_provider_payouts(update, context)
-    except Exception:
-        logger.exception("Admin provider payout history clear failed")
-        await query.edit_message_text(
-            "❌ **Could not clear the conversion list.**",
             reply_markup=admin_back(),
             parse_mode="Markdown",
         )

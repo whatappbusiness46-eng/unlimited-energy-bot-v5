@@ -815,9 +815,22 @@ def add_balance(
         user_id
     )
 
-    get_user(
+    user = get_user(
         user_id
-    )
+    ) or {}
+
+    # Provider reversals can create a recoverable debt when a member has
+    # already spent/withdrawn the credited points. Future rewards first pay
+    # down that debt instead of silently recreating the lost balance.
+    debt = max(0, int(user.get("provider_debt", 0) or 0))
+    debt_paid = min(amount, debt)
+    credit_amount = amount - debt_paid
+
+    update = {"$inc": {"total_earned": amount}}
+    if debt_paid:
+        update["$inc"]["provider_debt"] = -debt_paid
+    if credit_amount:
+        update["$inc"]["balance"] = credit_amount
 
     result = users.update_one(
         {
@@ -829,27 +842,31 @@ def add_balance(
                 "$ne": True
             },
         },
-        {
-            "$inc": {
-                "balance": amount,
-                "total_earned": amount,
-            }
-        },
+        update,
     )
 
     if result.modified_count > 0:
 
-        record_transaction(
-            user_id=user_id,
-            transaction_type="credit",
-            amount=amount,
-            source="balance_reward",
-        )
+        if credit_amount:
+            record_transaction(
+                user_id=user_id,
+                transaction_type="credit",
+                amount=credit_amount,
+                source="balance_reward",
+            )
+        if debt_paid:
+            record_transaction(
+                user_id=user_id,
+                transaction_type="provider_debt_offset",
+                amount=debt_paid,
+                source="provider_reversal",
+            )
 
-        update_daily_statistic(
-            field="total_points_distributed",
-            amount=amount,
-        )
+        if credit_amount:
+            update_daily_statistic(
+                field="total_points_distributed",
+                amount=credit_amount,
+            )
 
         return True
 

@@ -7,6 +7,7 @@ import json
 import xml.etree.ElementTree as ET
 import logging
 import os
+import secrets
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, Optional
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 provider_offers = db["provider_offers"]
 provider_events = db["provider_events"]
 provider_disabled_offers = db["provider_disabled_offers"]
+offerwall_task_proofs = db["offerwall_task_proofs"]
 
 try:
     provider_offers.create_index([("provider", 1), ("offer_id", 1)],
@@ -28,6 +30,10 @@ try:
                                  unique=True, name="provider_event_unique")
     provider_disabled_offers.create_index([("provider", 1), ("offer_id", 1)],
                                           unique=True, name="provider_disabled_offer_unique")
+    offerwall_task_proofs.create_index([("proof_id", 1)], unique=True, name="offerwall_task_proof_unique")
+    offerwall_task_proofs.create_index([("user_id", 1), ("task_id", 1), ("created_at", -1)], name="offerwall_task_proof_user_task")
+    db["offerwall_task_submissions"].create_index([("user_id", 1), ("task_id", 1)], unique=True, name="offerwall_task_submission_unique")
+    db["offerwall_task_submissions"].create_index([("user_id", 1), ("status", 1), ("submitted_at", -1)], name="offerwall_task_submission_status")
 except Exception:
     logger.exception("Provider indexes could not be created.")
 
@@ -67,6 +73,91 @@ def _json_request(url: str, *, method="GET", params=None, headers=None,
         except json.JSONDecodeError:
             return raw
 
+
+
+def create_offerwall_task_proof(user_id: int, task_id: str, telegram_file_id: str, caption: str = ""):
+    """Register a Telegram photo proof behind a random public proxy URL.
+
+    The Telegram bot token never leaves the server or appears in the provider-facing URL.
+    """
+    proof_id = secrets.token_urlsafe(24).replace("-", "_").replace(".", "_")
+    doc = {
+        "proof_id": proof_id,
+        "user_id": int(user_id),
+        "task_id": str(task_id),
+        "telegram_file_id": str(telegram_file_id),
+        "caption": str(caption or "")[:1000],
+        "created_at": int(time.time()),
+    }
+    offerwall_task_proofs.insert_one(doc)
+    base = _env("PUBLIC_BASE_URL") or _env("KEEPALIVE_URL") or _env("RENDER_EXTERNAL_URL") or "https://unlimited-energy-bot-v5.onrender.com"
+    return f"{base.rstrip('/')}/proof/{proof_id}", proof_id
+
+
+def get_offerwall_task_proof(proof_id: str):
+    if not proof_id:
+        return None
+    doc = offerwall_task_proofs.find_one({"proof_id": str(proof_id).strip()}, {"_id": 0})
+    if not doc:
+        return None
+    # Proof URLs are short-lived and should not become a permanent file host.
+    if int(time.time()) - int(doc.get("created_at", 0) or 0) > 30 * 24 * 3600:
+        offerwall_task_proofs.delete_one({"proof_id": str(proof_id).strip()})
+        return None
+    return doc
+
+
+def mark_offerwall_task_submission(user_id: int, task_id: str, status: str, **extra):
+    doc = {"status": str(status), "updated_at": int(time.time())}
+    doc.update(extra)
+    return db["offerwall_task_submissions"].update_one(
+        {"user_id": int(user_id), "task_id": str(task_id)},
+        {"$set": doc, "$setOnInsert": {"user_id": int(user_id), "task_id": str(task_id), "created_at": int(time.time())}},
+        upsert=True,
+    )
+
+
+def get_offerwall_task_submission(user_id: int, task_id: str):
+    return db["offerwall_task_submissions"].find_one(
+        {"user_id": int(user_id), "task_id": str(task_id)}, {"_id": 0}
+    )
+
+
+def _mark_offerwall_submission_from_postback(user_id: int, reward_raw: Any, event_id: str, points: int, offer_type: str = "", offer_name: str = ""):
+    """Best-effort match of a verified conversion to a pending task submission.
+
+    Offerwall.me postbacks may not include task_id, so only match a unique/latest pending
+    submission for the same user and raw reward. Never invent a task association.
+    """
+    submissions = db["offerwall_task_submissions"]
+    # Only associate callbacks explicitly identified as task conversions.
+    # If the provider omits offer_type, we allow matching only when there is a
+    # single pending submission for the user.
+    normalized_type = str(offer_type or "").strip().lower()
+    if normalized_type and "task" not in normalized_type:
+        return None
+    pending_query = {"user_id": int(user_id), "status": "pending"}
+    pending = list(submissions.find(
+        pending_query,
+        {"_id": 0},
+    ).sort("submitted_at", -1).limit(10))
+    if not pending:
+        return None
+    raw = str(reward_raw)
+    normalized_name = str(offer_name or "").strip().lower()
+    matches = [x for x in pending if str(x.get("provider_reward_raw", "")) == raw]
+    if normalized_name:
+        named = [x for x in matches if normalized_name == str(x.get("task_title", "")).strip().lower()]
+        if named:
+            matches = named
+    target = matches[0] if matches else (pending[0] if len(pending) == 1 else None)
+    if not target:
+        return None
+    submissions.update_one(
+        {"user_id": int(user_id), "task_id": str(target.get("task_id")), "status": "pending"},
+        {"$set": {"status": "rewarded", "provider_event_id": str(event_id), "reward_points": int(points), "approved_at": int(time.time())}},
+    )
+    return str(target.get("task_id"))
 
 
 def _offerwallme_credentials():
@@ -639,13 +730,19 @@ def _process_offerwallme_postback(params: Dict[str, Any]):
             return {"ok": True, "message": "duplicate_reversal_ignored"}
 
         points = int(existing.get("points") or 0)
-        if points > 0 and remove_balance(user_id, points):
-            provider_events.update_one(
-                {"_id": existing["_id"]},
-                {"$set": {"status": "2", "reversed_at": int(time.time())}},
-            )
-            return {"ok": True, "message": "reversal_recorded"}
-        return {"ok": False, "error": "reversal_credit_not_available"}
+        removed = remove_balance(user_id, points) if points > 0 else 0
+        debt = max(0, points - int(removed or 0))
+        if debt:
+            db["users"].update_one({"user_id": int(user_id)}, {"$inc": {"provider_debt": debt}})
+            try:
+                record_transaction(user_id, "offerwallme_reversal_debt", debt, event_id, metadata={"provider": "offerwallme"})
+            except Exception:
+                logger.exception("Offerwall.me reversal debt transaction failed | event=%s", event_id)
+        provider_events.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"status": "2", "reversed_at": int(time.time()), "reversal_removed": int(removed or 0), "reversal_debt": debt}},
+        )
+        return {"ok": True, "message": "reversal_recorded", "removed": int(removed or 0), "debt": debt}
 
     if status not in {"", "1"}:
         return {"ok": True, "message": "ignored_status"}
@@ -680,15 +777,16 @@ def _process_offerwallme_postback(params: Dict[str, Any]):
         return {"ok": False, "error": "credit_failed"}
 
     try:
-        record_transaction(user_id, points, "offerwallme_conversion", event_id)
+        record_transaction(user_id, "offerwallme_conversion", points, event_id)
     except Exception:
         logger.exception("Offerwall.me transaction record failed | event=%s", event_id)
     try:
         add_activity(user_id, "💸 Offerwall.me conversion", points)
     except Exception:
         logger.exception("Offerwall.me activity log failed | user=%s", user_id)
+    matched_task_id = _mark_offerwall_submission_from_postback(user_id, reward_raw, event_id, points, params.get("offer_type"), params.get("offer_name"))
 
-    return {"ok": True, "message": "credited", "provider": "offerwallme", "event_id": event_id, "user_id": user_id, "points": points}
+    return {"ok": True, "message": "credited", "provider": "offerwallme", "event_id": event_id, "user_id": user_id, "points": points, **({"task_id": matched_task_id} if matched_task_id else {})}
 
 def process_postback(provider: str, params: Dict[str, Any]):
     provider = str(provider).lower().strip()
@@ -698,10 +796,12 @@ def process_postback(provider: str, params: Dict[str, Any]):
         return {"ok": False, "error": "provider_disabled"}
 
     event_id = str(
-        params.get("event_id") or params.get("transaction_id") or
-        params.get("txn") or params.get("conversion_id") or ""
+        params.get("event_id") or params.get("transaction_id") or params.get("transactionid") or
+        params.get("trans_id") or params.get("transId") or params.get("txn") or
+        params.get("conversion_id") or params.get("lead_id") or ""
     ).strip()
-    user_raw = params.get("tracking_id") or params.get("user_id") or params.get("uid") or params.get("subid") or params.get("sub_id")
+    user_raw = (params.get("tracking_id") or params.get("subid") or params.get("sub_id") or
+                params.get("user_id") or params.get("uid"))
     reward_raw = params.get("reward") if params.get("reward") not in (None, "") else params.get("payout", params.get("amount", 0))
     status = str(params.get("status") or params.get("event") or "approved").lower()
 
@@ -724,12 +824,23 @@ def process_postback(provider: str, params: Dict[str, Any]):
         return {"ok": False, "error": "user_not_found"}
     if not _verify_postback(provider, params):
         return {"ok": False, "error": "invalid_signature"}
-    if status in {"reversed", "chargeback", "reject", "rejected"}:
+    if status in {"2", "reversed", "reverse", "chargeback", "charged_back", "reject", "rejected"}:
         existing = provider_events.find_one({"provider": provider, "event_id": event_id})
         if not existing:
             return {"ok": True, "message": "reversal_ignored_unknown_event"}
-        provider_events.update_one({"_id": existing["_id"]}, {"$set": {"status": status, "reversed_at": int(time.time())}})
-        return {"ok": True, "message": "reversal_recorded"}
+        if existing.get("status") in {"2", "reversed", "reverse", "chargeback", "charged_back", "reject", "rejected"} or existing.get("reversed_at"):
+            return {"ok": True, "message": "duplicate_reversal_ignored"}
+        points = int(existing.get("points") or 0)
+        removed = remove_balance(user_id, points) if points > 0 else 0
+        debt = max(0, points - int(removed or 0))
+        if debt:
+            db["users"].update_one({"user_id": int(user_id)}, {"$inc": {"provider_debt": debt}})
+            try:
+                record_transaction(user_id, "cpagrip_reversal_debt", debt, event_id, metadata={"provider": "cpagrip"})
+            except Exception:
+                logger.exception("CPAGrip reversal debt transaction failed | event=%s", event_id)
+        provider_events.update_one({"_id": existing["_id"]}, {"$set": {"status": status, "reversed_at": int(time.time()), "reversal_removed": int(removed or 0), "reversal_debt": debt}})
+        return {"ok": True, "message": "reversal_recorded", "removed": int(removed or 0), "debt": debt}
     points = _reward_points(reward_raw)
     if points <= 0:
         return {"ok": False, "error": "invalid_reward"}
@@ -745,7 +856,7 @@ def process_postback(provider: str, params: Dict[str, Any]):
         provider_events.delete_one({"provider": provider, "event_id": event_id})
         return {"ok": False, "error": "credit_failed"}
     try:
-        record_transaction(user_id, points, "cpagrip_conversion", event_id)
+        record_transaction(user_id, "cpagrip_conversion", points, event_id)
     except Exception:
         logger.exception("Transaction record failed | event=%s", event_id)
     try:

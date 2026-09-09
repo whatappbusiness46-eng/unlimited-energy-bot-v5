@@ -8,8 +8,10 @@
 import logging
 import os
 import threading
+import json
+from urllib.request import Request as UrlRequest, urlopen as urlopen_request
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 
 from telegram import Update
 
@@ -23,7 +25,7 @@ from telegram.ext import (
 )
 
 from config import BOT_TOKEN
-from provider_integrations import process_postback, provider_status
+from provider_integrations import process_postback, provider_status, get_offerwall_task_proof
 
 from handlers import (
     start,
@@ -163,6 +165,41 @@ def health():
 @app.route("/health/providers")
 def provider_health():
     return jsonify(provider_status())
+
+
+@app.route("/proof/<proof_id>", methods=["GET"])
+def offerwall_task_proof_proxy(proof_id):
+    """Securely proxy Telegram photo proofs without exposing BOT_TOKEN to providers/users."""
+    doc = get_offerwall_task_proof(proof_id)
+    if not doc:
+        return jsonify({"error": "proof_not_found"}), 404
+    token = os.getenv("BOT_TOKEN", "").strip()
+    file_id = str(doc.get("telegram_file_id") or "").strip()
+    if not token or not file_id:
+        return jsonify({"error": "proof_unavailable"}), 404
+    try:
+        meta_req = UrlRequest(
+            f"https://api.telegram.org/bot{token}/getFile?file_id={__import__('urllib.parse').parse.quote(file_id)}",
+            headers={"User-Agent": "UnlimitedEnergyBot/Final"},
+        )
+        with urlopen_request(meta_req, timeout=10) as meta_resp:
+            meta = json.loads(meta_resp.read().decode("utf-8", errors="replace"))
+        file_path = str(((meta or {}).get("result") or {}).get("file_path") or "").strip()
+        if not file_path:
+            return jsonify({"error": "telegram_file_unavailable"}), 404
+        file_req = UrlRequest(
+            f"https://api.telegram.org/file/bot{token}/{file_path}",
+            headers={"User-Agent": "UnlimitedEnergyBot/Final"},
+        )
+        with urlopen_request(file_req, timeout=15) as file_resp:
+            data = file_resp.read(10 * 1024 * 1024 + 1)
+            content_type = str(file_resp.headers.get("Content-Type") or "image/jpeg")
+        if len(data) > 10 * 1024 * 1024:
+            return jsonify({"error": "proof_too_large"}), 413
+        return Response(data, mimetype=content_type.split(";", 1)[0], headers={"Cache-Control": "no-store, max-age=0"})
+    except Exception:
+        logger.exception("Offerwall proof proxy failed | proof=%s", proof_id)
+        return jsonify({"error": "proof_unavailable"}), 502
 
 
 @app.route("/cpagrip/postback", methods=["GET", "POST"])
