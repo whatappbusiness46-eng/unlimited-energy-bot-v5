@@ -180,6 +180,27 @@ SHORTLINK_XP = 10
 
 
 # ============================================================
+# FLASH JOIN BONUS / ACTIVE MEMBER CAMPAIGN
+# ============================================================
+# Join bonus is credited as Points using the existing withdrawal rate.
+# Default conversion: 10 Points = ৳1, so 50৳ = 500 Points.
+JOIN_BONUS_ENABLED = os.getenv("JOIN_BONUS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+JOIN_BONUS_POINTS_PER_BDT = max(1, int(os.getenv("JOIN_BONUS_POINTS_PER_BDT", "10")))
+JOIN_BONUS_DURATION_SECONDS = max(60, int(os.getenv("JOIN_BONUS_DURATION_SECONDS", "86400")))
+JOIN_BONUS_FIRST_TIER_COUNT = max(0, int(os.getenv("JOIN_BONUS_FIRST_TIER_COUNT", "100")))
+JOIN_BONUS_FIRST_TIER_BDT = max(0, int(os.getenv("JOIN_BONUS_FIRST_TIER_BDT", "50")))
+JOIN_BONUS_SECOND_TIER_COUNT = max(0, int(os.getenv("JOIN_BONUS_SECOND_TIER_COUNT", "250")))
+JOIN_BONUS_SECOND_TIER_BDT = max(0, int(os.getenv("JOIN_BONUS_SECOND_TIER_BDT", "20")))
+JOIN_BONUS_THIRD_TIER_COUNT = max(0, int(os.getenv("JOIN_BONUS_THIRD_TIER_COUNT", "500")))
+JOIN_BONUS_THIRD_TIER_BDT = max(0, int(os.getenv("JOIN_BONUS_THIRD_TIER_BDT", "5")))
+JOIN_BONUS_CAMPAIGN_START_AT = os.getenv("JOIN_BONUS_CAMPAIGN_START_AT", "").strip()
+
+ACTIVE_CAMPAIGN_DAYS = max(1, int(os.getenv("ACTIVE_CAMPAIGN_DAYS", "7")))
+ACTIVE_CAMPAIGN_TASK_SCORE = max(1, int(os.getenv("ACTIVE_CAMPAIGN_TASK_SCORE", "1")))
+ACTIVE_CAMPAIGN_REFERRAL_SCORE = max(1, int(os.getenv("ACTIVE_CAMPAIGN_REFERRAL_SCORE", "5")))
+
+
+# ============================================================
 # REFERRAL
 # ============================================================
 

@@ -705,16 +705,19 @@ def refresh_cpa_lead_bd_offers(user_id: int):
     return get_cpa_lead_bd_offers(user_id, force_refresh=True)
 
 def get_provider_offers(user_id: int, providers: Optional[Iterable[str]] = None, force_refresh: bool = False):
-    providers = [p.lower() for p in (providers or ("cpagrip",))]
-    providers = [p for p in providers if p == "cpagrip" and _enabled(p)]
+    providers = [p.lower() for p in (providers or ("cpagrip", "cpalead"))]
+    providers = [p for p in providers if p in {"cpagrip", "cpalead"} and _enabled(p)]
     if not providers:
         return []
-    cache_key = ("cpagrip_offers", int(user_id))
+    cache_key = ("provider_offers", int(user_id), tuple(providers))
     cached = None if force_refresh else _cache_get(cache_key)
     if cached is not None:
         return cached
     for provider in providers:
-        sync_cpagrip_offers(user_id)
+        if provider == "cpagrip":
+            sync_cpagrip_offers(user_id)
+        elif provider == "cpalead":
+            _sync_cpa_lead_bd_offers(user_id)
     disabled = {str(x["offer_id"]) for x in provider_disabled_offers.find({"provider": {"$in": providers}}, {"offer_id": 1})}
     docs = provider_offers.find({"provider": {"$in": providers}}, {"_id": 0}).sort("updated_at", -1).limit(100)
     return _cache_set(cache_key, [dict(x) for x in docs if str(x.get("offer_id")) not in disabled])
@@ -1122,6 +1125,7 @@ def provider_cache_fresh(kind: str, user_id: int) -> bool:
 
 def refresh_provider_offers(user_id: int):
     _cache_clear("cpagrip_offers", user_id)
+    _cache_clear("provider_offers", user_id)
     return get_provider_offers(user_id, force_refresh=True)
 
 

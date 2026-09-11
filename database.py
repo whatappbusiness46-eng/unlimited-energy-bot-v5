@@ -14,6 +14,7 @@ from pymongo import (
     MongoClient,
     ASCENDING,
     DESCENDING,
+    ReturnDocument,
 )
 
 from pymongo.errors import (
@@ -89,6 +90,8 @@ daily_statistics = db[
 bot_settings = db[
     "bot_settings"
 ]
+
+join_bonus_claims = db["join_bonus_claims"]
 
 
 # ============================================================
@@ -293,6 +296,8 @@ def ensure_indexes():
         db["provider_disabled_offers"].create_index([("provider", ASCENDING), ("offer_id", ASCENDING)], name="provider_disabled_lookup")
         db["payments"].create_index([("payment_id", ASCENDING)], unique=True, name="payment_id_unique")
         db["payments"].create_index([("status", ASCENDING), ("created_at", DESCENDING)], name="payment_status_created")
+        join_bonus_claims.create_index([("user_id", ASCENDING)], unique=True, name="join_bonus_user_unique")
+        join_bonus_claims.create_index([("campaign_id", ASCENDING), ("sequence", ASCENDING)], unique=True, name="join_bonus_sequence_unique")
 
     except Exception as error:
 
@@ -457,6 +462,10 @@ def build_default_user(user_id):
         "referral_reward_given": False,
 
         "referral_ids": [],
+
+        "campaign_score": 0,
+        "campaign_tasks": 0,
+        "campaign_referrals": 0,
 
 
         # ====================================================
@@ -1882,6 +1891,74 @@ def banned_users():
             "banned": True
         }
     )
+
+
+# ============================================================
+# FLASH JOIN BONUS / ACTIVE CAMPAIGN
+# ============================================================
+
+def get_active_campaign_settings():
+    return bot_settings.find_one({"_id": "active_campaign"}) or {}
+
+def _campaign_now():
+    return int(time.time())
+
+def start_or_get_join_bonus_campaign(duration_seconds=86400, start_at=None):
+    now = _campaign_now()
+    current = get_active_campaign_settings()
+    if current.get("started_at") and current.get("ends_at"):
+        return current
+    started = int(start_at or now)
+    ends = started + int(duration_seconds)
+    doc = {"_id":"active_campaign", "started_at":started, "ends_at":ends, "updated_at":now}
+    bot_settings.update_one({"_id":"active_campaign", "started_at":{"$exists":False}}, {"$set":doc}, upsert=True)
+    return get_active_campaign_settings()
+
+def claim_join_bonus(user_id, tiers, duration_seconds=86400, enabled=True, campaign_start_at=None):
+    if not enabled:
+        return None
+    user_id = int(user_id)
+    now = _campaign_now()
+    campaign = get_active_campaign_settings()
+    if not campaign.get("started_at"):
+        campaign = start_or_get_join_bonus_campaign(duration_seconds, campaign_start_at)
+    if now > int(campaign.get("ends_at", 0)):
+        return None
+    if join_bonus_claims.find_one({"user_id": user_id}):
+        return None
+    try:
+        counter = bot_settings.find_one_and_update(
+            {"_id":"active_campaign"},
+            {"$inc":{"join_bonus_sequence":1}, "$set":{"updated_at":now}},
+            upsert=True, return_document=ReturnDocument.AFTER
+        ) or {}
+        sequence = int(counter.get("join_bonus_sequence", 0))
+        tier = None
+        cumulative = 0
+        for count, bdt in tiers:
+            cumulative += int(count)
+            if sequence <= cumulative:
+                tier = (int(count), int(bdt), sequence)
+                break
+        if not tier:
+            return None
+        count, bdt, sequence = tier
+        join_bonus_claims.insert_one({"user_id":user_id,"campaign_id":"active_campaign","sequence":sequence,"bdt":bdt,"claimed_at":now})
+        return {"bdt":bdt,"sequence":sequence,"campaign_id":"active_campaign","ends_at":int(campaign.get("ends_at",0))}
+    except DuplicateKeyError:
+        return None
+    except Exception:
+        logger.exception("Join bonus claim failed | user=%s", user_id)
+        return None
+
+def increment_campaign_score(user_id, task_delta=0, referral_delta=0):
+    inc = {"campaign_score": int(task_delta) + int(referral_delta)}
+    if task_delta: inc["campaign_tasks"] = int(task_delta)
+    if referral_delta: inc["campaign_referrals"] = int(referral_delta)
+    return users.update_one({"user_id":int(user_id)}, {"$inc":inc}).modified_count > 0
+
+def campaign_leaderboard(limit=10):
+    return list(users.find({"banned":{"$ne":True}, "blacklisted":{"$ne":True}, "campaign_score":{"$gt":0}}, {"_id":0}).sort("campaign_score", DESCENDING).limit(int(limit)))
 
 
 # ============================================================

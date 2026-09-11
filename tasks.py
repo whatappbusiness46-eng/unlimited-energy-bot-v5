@@ -379,6 +379,12 @@ def approve_task_completion(user_id, task_id, admin_id):
         logger.exception("Referral activation hook failed")
     try: add_activity(user_id, f"VIP task approved: {task.get('title')}", reward)
     except Exception: pass
+    try:
+        from database import increment_campaign_score
+        from config import ACTIVE_CAMPAIGN_TASK_SCORE
+        increment_campaign_score(user_id, task_delta=ACTIVE_CAMPAIGN_TASK_SCORE)
+    except Exception:
+        logger.exception("Active campaign task score update failed")
     return True, f"Approved +{reward} Points"
 
 
@@ -449,6 +455,12 @@ def complete_task(user_id, task_id, bot=None):
         logger.exception("Referral activation hook failed")
     try: add_activity(user_id, f"Task completed: {task.get('title')}", reward)
     except Exception: pass
+    try:
+        from database import increment_campaign_score
+        from config import ACTIVE_CAMPAIGN_TASK_SCORE
+        increment_campaign_score(user_id, task_delta=ACTIVE_CAMPAIGN_TASK_SCORE)
+    except Exception:
+        logger.exception("Active campaign task score update failed")
     return True, "OK"
 
 
@@ -491,6 +503,12 @@ async def complete_task_async(user_id, task_id, bot):
     except Exception: logger.exception("Referral activation hook failed")
     try: add_activity(user_id, f"Task completed: {task.get('title')}", reward)
     except Exception: pass
+    try:
+        from database import increment_campaign_score
+        from config import ACTIVE_CAMPAIGN_TASK_SCORE
+        increment_campaign_score(user_id, task_delta=ACTIVE_CAMPAIGN_TASK_SCORE)
+    except Exception:
+        logger.exception("Active campaign task score update failed")
     return True, "OK"
 
 

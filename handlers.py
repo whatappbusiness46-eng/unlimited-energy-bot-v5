@@ -16,13 +16,23 @@ from telegram import (
 from telegram.ext import ContextTypes
 
 from config import ADMIN_USERNAME, FORCE_JOIN_ENABLED
+from config import (
+    JOIN_BONUS_ENABLED, JOIN_BONUS_POINTS_PER_BDT, JOIN_BONUS_DURATION_SECONDS,
+    JOIN_BONUS_FIRST_TIER_COUNT, JOIN_BONUS_FIRST_TIER_BDT,
+    JOIN_BONUS_SECOND_TIER_COUNT, JOIN_BONUS_SECOND_TIER_BDT,
+    JOIN_BONUS_THIRD_TIER_COUNT, JOIN_BONUS_THIRD_TIER_BDT,
+    JOIN_BONUS_CAMPAIGN_START_AT,
+)
 
 from database import (
     create_user,
     get_user,
     update_user,
     leaderboard,
+    campaign_leaderboard,
     add_activity as db_add_activity,
+    add_balance,
+    claim_join_bonus,
 )
 
 from config import (
@@ -118,6 +128,12 @@ def main_menu():
                 "🏆 Rank",
                 callback_data="rank",
             ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🔥 Active Leaderboard",
+                callback_data="active_leaderboard",
+            )
         ],
         [
             InlineKeyboardButton(
@@ -329,6 +345,40 @@ async def start(
             return
 
     # --------------------------------------------------------
+    # Automatic 24-hour Join Cash Bonus
+    # --------------------------------------------------------
+    try:
+        tiers = [
+            (JOIN_BONUS_FIRST_TIER_COUNT, JOIN_BONUS_FIRST_TIER_BDT),
+            (JOIN_BONUS_SECOND_TIER_COUNT, JOIN_BONUS_SECOND_TIER_BDT),
+            (JOIN_BONUS_THIRD_TIER_COUNT, JOIN_BONUS_THIRD_TIER_BDT),
+        ]
+        claim = claim_join_bonus(
+            user_id,
+            tiers,
+            duration_seconds=JOIN_BONUS_DURATION_SECONDS,
+            enabled=JOIN_BONUS_ENABLED,
+            campaign_start_at=None,
+        )
+        if claim and int(claim.get("bdt", 0)) > 0:
+            bdt = int(claim["bdt"])
+            points = bdt * JOIN_BONUS_POINTS_PER_BDT
+            if add_balance(user_id, points):
+                sequence = int(claim.get("sequence", 0))
+                await update.message.reply_text(
+                    "🎉 **CONGRATULATIONS!** 🎉\n\n"
+                    f"💰 You received **৳{bdt} CASH JOIN BONUS**!\n"
+                    f"💵 Bonus: **৳{bdt}**\n"
+                    "🎁 Event: **24 Hours Flash Event**\n\n"
+                    "❤️ Your bonus has been added to your balance.\n"
+                    f"🏷️ Join Position: **#{sequence}**\n\n"
+                    "🚀 Now complete Tasks and invite Friends to earn more!",
+                    parse_mode="Markdown",
+                )
+    except Exception:
+        logger.exception("Automatic join bonus failed | user=%s", user_id)
+
+    # --------------------------------------------------------
     # Home
     # --------------------------------------------------------
 
@@ -356,6 +406,26 @@ async def start(
         user_id,
         "Opened bot",
     )
+
+
+# ============================================================
+# ACTIVE CAMPAIGN LEADERBOARD
+# ============================================================
+
+async def active_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    top_users = campaign_leaderboard(10)
+    if not top_users:
+        await update.effective_message.reply_text("🔥 Active leaderboard is empty right now.", reply_markup=main_menu())
+        return
+    lines = ["🔥 **7 DAYS ACTIVE LEADERBOARD**", "", "Complete tasks + refer friends + stay active!", ""]
+    medals = ["🥇", "🥈", "🥉"]
+    for pos, user in enumerate(top_users, 1):
+        icon = medals[pos-1] if pos <= 3 else f"{pos}."
+        name = str(user.get("first_name") or user.get("last_name") or "Member").replace("*", "\\*").replace("_", "\\_").replace("`", "\\`")
+        score = int(user.get("campaign_score", 0) or 0)
+        lines.append(f"{icon} {name} — **{score}** score")
+    lines += ["", "👑🎁 VIP Gift will be given according to campaign performance."]
+    await update.effective_message.reply_text("\n".join(lines), reply_markup=main_menu(), parse_mode="Markdown")
 
 
 # ============================================================
@@ -1150,6 +1220,8 @@ HANDLER_FUNCTIONS = {
 
     "leaderboard":
         leaderboard_command,
+    "active_leaderboard":
+        active_leaderboard,
 
     "activity":
         activity,

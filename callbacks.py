@@ -25,6 +25,7 @@ from config import (
 
 from database import (
     get_user,
+    campaign_leaderboard,
     remove_balance,
     add_balance,
     add_activity,
@@ -1328,6 +1329,22 @@ async def button_callback(
             query,
             user_id,
         )
+        return
+
+    if data == "active_leaderboard":
+        top_users = campaign_leaderboard(10)
+        if not top_users:
+            await query.edit_message_text("🔥 Active leaderboard is empty right now.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="home")]]))
+            return
+        lines = ["🔥 **7 DAYS ACTIVE LEADERBOARD**", "", "Complete tasks + refer friends + stay active!", ""]
+        medals = ["🥇", "🥈", "🥉"]
+        for pos, member in enumerate(top_users, 1):
+            icon = medals[pos-1] if pos <= 3 else f"{pos}."
+            name = str(member.get("first_name") or member.get("last_name") or "Member").replace("*", "\\*").replace("_", "\\_").replace("`", "\\`")
+            score = int(member.get("campaign_score", 0) or 0)
+            lines.append(f"{icon} {name} — **{score}** score")
+        lines += ["", "👑🎁 VIP Gift will be given according to campaign performance."]
+        await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="home")]]), parse_mode="Markdown")
         return
 
     # ========================================================

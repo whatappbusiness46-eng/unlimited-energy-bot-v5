@@ -161,6 +161,12 @@ def activate_referral(new_user_id, qualifying_activity="task"):
         current_earn = _safe_int(referrer.get("referral_earn",0)) + reward
         current_xp = _safe_int(referrer.get("referral_xp",0)) + xp
         update_user(referrer_id, {"referrals":current_refs,"referral_earn":current_earn,"referral_xp":current_xp,"pending_referrals":max(0,_safe_int(referrer.get("pending_referrals",0))-1)})
+        try:
+            from database import increment_campaign_score
+            from config import ACTIVE_CAMPAIGN_REFERRAL_SCORE
+            increment_campaign_score(referrer_id, referral_delta=ACTIVE_CAMPAIGN_REFERRAL_SCORE)
+        except Exception:
+            logger.exception("Active campaign referral score update failed")
         if xp > 0:
             add_activity(referrer_id, f"👥 Qualified referral XP +{xp}", 0)
         # Milestones are awarded once per threshold.
