@@ -2370,6 +2370,59 @@ def reject_withdrawal(
 
 
 # ============================================================
+# WITHDRAWAL SETTINGS / POINTS -> BDT
+# ============================================================
+
+def get_withdrawal_settings():
+    """Return admin-controlled withdrawal conversion settings.
+
+    Stored in bot_settings so the admin panel can change the rate, minimum,
+    and step without touching member balances. Defaults preserve the bot's
+    current withdrawal model: 1000 Points = ৳100 and 50-Point increments.
+    """
+    try:
+        settings = bot_settings.find_one({"_id": "main"}) or {}
+    except Exception:
+        logger.exception("Failed to read withdrawal settings")
+        settings = {}
+
+    def _positive_int(value, default):
+        try:
+            value = int(value)
+            return value if value > 0 else default
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "points_per_100_bdt": _positive_int(
+            settings.get("withdraw_points_per_100_bdt"), 1000
+        ),
+        "min_points": _positive_int(
+            settings.get("withdraw_min_points"), MIN_WITHDRAW
+        ),
+        "step_points": _positive_int(
+            settings.get("withdraw_step_points"), 50
+        ),
+    }
+
+
+def points_to_bdt(points, points_per_100_bdt=None):
+    """Convert Points to BDT using the withdrawal rate."""
+    try:
+        points = float(points or 0)
+        rate = (
+            float(points_per_100_bdt)
+            if points_per_100_bdt is not None
+            else float(get_withdrawal_settings()["points_per_100_bdt"])
+        )
+        if points <= 0 or rate <= 0:
+            return 0
+        return points * 100.0 / rate
+    except (TypeError, ValueError, ZeroDivisionError):
+        return 0
+
+
+# ============================================================
 # GET WITHDRAWALS
 # ============================================================
 
