@@ -776,14 +776,13 @@ async def leaderboard_command(
 
             icon = f"{position}."
 
-        # Show the user's Telegram display name (first name), not @username.
-        # Fall back to last name or a neutral label if no name is stored.
+        # Public leaderboard shows Telegram display name, never @username.
         display_name = (
             str(user.get("first_name") or "").strip()
             or str(user.get("last_name") or "").strip()
             or "Unknown"
         )
-        # Escape Telegram Markdown characters so names cannot break parsing.
+        # Escape Markdown characters so names cannot break entity parsing.
         for char in ("\\", "*", "_", "`"):
             display_name = display_name.replace(char, "\\" + char)
 
