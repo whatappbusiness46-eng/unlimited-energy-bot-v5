@@ -779,6 +779,10 @@ async def leaderboard_command(
         username = user.get("username") or "Unknown"
         if username != "Unknown":
             username = f"@{str(username).lstrip('@')}"
+            # Telegram Markdown treats underscores/asterisks/etc. as formatting.
+            # Escape them so usernames can never break entity parsing.
+            for char in ("\\", "*", "_", "`"):
+                username = username.replace(char, "\\" + char)
 
         text += (
             f"{icon} {username}\n"
