@@ -776,8 +776,12 @@ async def leaderboard_command(
 
             icon = f"{position}."
 
+        username = user.get("username") or "Unknown"
+        if username != "Unknown":
+            username = f"@{str(username).lstrip('@')}"
+
         text += (
-            f"{icon} `{user_id}`\n"
+            f"{icon} {username}\n"
             f"   💰 {balance_value} Points\n\n"
         )
 

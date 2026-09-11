@@ -57,6 +57,7 @@ from database import (
     maintenance_optimize_indexes,
     get_withdrawal_settings,
     points_to_bdt,
+    leaderboard,
 )
 
 
@@ -112,6 +113,13 @@ def admin_menu():
                 "📊 Statistics",
                 callback_data="admin_stats",
             ),
+        ],
+
+        [
+            InlineKeyboardButton(
+                "🏆 Leaderboard",
+                callback_data="admin_leaderboard",
+            )
         ],
 
         [
@@ -357,6 +365,53 @@ async def admin_panel(
             reply_markup=admin_menu(),
             parse_mode="Markdown",
         )
+
+
+# ==================================================
+# LEADERBOARD
+# ==================================================
+
+async def admin_leaderboard(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    if not admin_only(query.from_user.id):
+        await query.answer(
+            "🚫 Admin only.",
+            show_alert=True,
+        )
+        return
+
+    await query.answer()
+
+    top_users = leaderboard()
+
+    if not top_users:
+        await query.edit_message_text(
+            "🏆 **ADMIN LEADERBOARD**\n\nLeaderboard is empty.",
+            reply_markup=admin_back(),
+            parse_mode="Markdown",
+        )
+        return
+
+    text = "🏆 **ADMIN LEADERBOARD**\n\n"
+
+    medals = ["🥇", "🥈", "🥉"]
+
+    for position, user in enumerate(top_users, start=1):
+        user_id = user.get("user_id", "Unknown")
+        score = user.get("balance", 0)
+        icon = medals[position - 1] if position <= 3 else f"{position}."
+        text += f"{icon} `{user_id}` — 💰 {score} Points\n"
+
+    await query.edit_message_text(
+        text,
+        reply_markup=admin_back(),
+        parse_mode="Markdown",
+    )
 
 
 # ==================================================
@@ -3569,6 +3624,7 @@ async def admin_callback(
 
     routes = {
         "admin_users": admin_users,
+        "admin_leaderboard": admin_leaderboard,
         "admin_find_user": admin_find_user,
         "admin_balance": admin_balance,
         "admin_ban": admin_ban,
