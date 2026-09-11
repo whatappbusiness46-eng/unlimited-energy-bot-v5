@@ -562,7 +562,7 @@ async def _refresh_tasks_in_background(query, user_id: int):
                 for t in vip:
                     lines.append(f"{'🟢' if task_available(user_id,t['id']) else '✅'} {_md(t.get('title',''))} — +{_safe_int(t.get('reward'),0)} Points")
             if offerwall_tasks:
-                lines += ["", "💰 **OFFERWALL.ME TASKS**"]
+                lines += ["", "💎 **REWARD TASKS**"]
                 for t in offerwall_tasks[:OFFERWALLME_TASK_LIMIT]:
                     reward = _offerwallme_reward_points(t.get("reward"), user_id)
                     lines.append(f"🟢 {_md(t.get('title','Offerwall Task'))} — +{reward} Points")
@@ -632,7 +632,7 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for t in vip:
                 lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {_md(t.get('title',''))} — +{_safe_int(t.get('reward'),0)} Points")
         if offerwall_tasks:
-            lines += ["", "💰 **OFFERWALL.ME TASKS**"]
+            lines += ["", "💎 **REWARD TASKS**"]
             for t in offerwall_tasks[:OFFERWALLME_TASK_LIMIT]:
                 reward = _offerwallme_reward_points(t.get("reward"), user.id)
                 lines.append(f"🟢 {_md(t.get('title','Offerwall Task'))} — +{reward} Points")
@@ -693,14 +693,14 @@ async def offerwallme_category_callback(update, context):
         return
     tasks = _offerwall_category_tasks(q.from_user.id, category)
     label = _offerwall_task_category_label(category)
-    lines = [f"{label}", "", "Complete genuine offers through Offerwall.me. Rewards are credited only after verified provider conversion.", ""]
+    lines = [f"{label}", "", "Complete genuine tasks. Rewards are credited only after verified provider conversion.", ""]
     buttons = []
     if tasks:
         for task in tasks[:OFFERWALLME_TASK_LIMIT]:
             task_id = str(task.get("id") or "")
             if not task_id:
                 continue
-            title = str(task.get("title") or "Offerwall Task")
+            title = str(task.get("title") or "Reward Task")
             reward = _offerwallme_reward_points(task.get("reward", task.get("payout", task.get("amount", 0))), q.from_user.id)
             buttons.append([InlineKeyboardButton(f"🎯 {title[:28]} (+{reward})", callback_data=f"owtask_{task_id}")])
     else:
@@ -724,7 +724,7 @@ async def offerwallme_task_callback(update, context):
         tasks = []
     task = next((t for t in tasks if str(t.get("id")) == task_id), None)
     if not task:
-        await q.edit_message_text("⚠️ This Offerwall.me task is no longer available.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks", callback_data="tasks")]]))
+        await q.edit_message_text("⚠️ This reward task is no longer available.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks", callback_data="tasks")]]))
         return
 
     # No screenshot/proof step: opening a provider task creates one pending
@@ -770,14 +770,14 @@ async def offerwallme_task_callback(update, context):
     text += f"💰 Reward: +{reward} Points\n🏷 Type: {_md(category_label)}"
     if platform:
         text += f"\n📱 Platform: {_md(platform)}"
-    text += "\n\n⏳ **Status:** Pending — complete the task on Offerwall.me. Your Points will be added automatically after the verified postback."
+    text += "\n\n⏳ **Status:** Pending — complete the task. Your Points will be added automatically after provider verification."
 
     buttons = []
     task_url = str(task.get("url") or task.get("link") or "").strip()
     if task_url:
         buttons.append([InlineKeyboardButton("🚀 Open Task", url=task_url)])
     if submission_status == "rewarded":
-        text = text.replace("⏳ **Status:** Pending — complete the task on Offerwall.me. Your Points will be added automatically after the verified postback.", "✅ **Status:** Verified & Rewarded — Points have been added.")
+        text = text.replace("⏳ **Status:** Pending — complete the task. Your Points will be added automatically after provider verification.", "✅ **Status:** Verified & Rewarded — Points have been added.")
     buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
