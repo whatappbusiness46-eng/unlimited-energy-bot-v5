@@ -3812,7 +3812,7 @@ async def admin_provider_payouts(update, context):
     try:
         rows = list(provider_events.find({"admin_hidden": {"$ne": True}}, {"_id": 0}).sort("received_at", -1).limit(50))
         stats = {}
-        for provider in ("offerwallme", "cpagrip"):
+        for provider in ("offerwallme", "cpagrip", "cpalead"):
             items = [r for r in rows if str(r.get("provider", "")).lower() == provider]
             # Use all stored events for totals, not just the latest 25.
             all_items = list(provider_events.find({"provider": provider}, {"_id": 0}))
@@ -3841,6 +3841,7 @@ async def admin_provider_payouts(update, context):
 
         ow_count, ow_total, ow_points = stats["offerwallme"]
         cp_count, cp_total, cp_points = stats["cpagrip"]
+        bd_count, bd_total, bd_points = stats["cpalead"]
 
         text = (
             "💵 **PROVIDER PAYOUTS**\n\n"
@@ -3859,6 +3860,12 @@ async def admin_provider_payouts(update, context):
             f"• Member points credited: `{cp_points}`\n"
             f"• User reward share: `{_admin_env('CPAGRIP_USER_REWARD_PERCENT', '40')}%`\n"
             f"• Points per USD: `{_admin_env('REWARD_POINTS_PER_USD', '1000')}`\n\n"
+            "🇧🇩 **CPAlead BD Tasks**\n"
+            f"• Conversions: `{bd_count}`\n"
+            f"• Provider payout total (USD): `${bd_total:.2f}`\n"
+            f"• Member points credited: `{bd_points}`\n"
+            f"• User reward share: `{_admin_env('CPALEAD_USER_REWARD_PERCENT', '40')}%`\n"
+            f"• Points per USD: `{_admin_env('CPALEAD_POINTS_PER_USD', '1000')}`\n\n"
             "🎁 **Current CPAGrip offers / real payout**\n"
         )
 

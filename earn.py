@@ -124,7 +124,7 @@ def earn_menu():
                 InlineKeyboardButton(
                     "🎁 Offers",
                     callback_data="offers",
-                )
+                ),
             ],
             [
                 InlineKeyboardButton(
@@ -188,6 +188,7 @@ async def earn_page(
         "📋 Complete Tasks\n"
         "🔗 Complete Shortlinks\n"
         "🎁 CPA Offers\n"
+        "💰 Offerwall.me Tasks\n"
         "🎡 Spin Wheel\n"
         "🎁 Lucky Box\n"
         "🎫 Scratch Card\n"

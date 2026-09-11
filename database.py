@@ -29,7 +29,6 @@ from config import (
     XP_PER_LEVEL,
     LEADERBOARD_LIMIT,
     ACTIVITY_LIMIT,
-    MIN_WITHDRAW,
 )
 
 
@@ -1918,65 +1917,6 @@ def leaderboard(
 
 
 # ============================================================
-# WITHDRAWAL CONVERSION SETTINGS
-# ============================================================
-
-DEFAULT_WITHDRAW_POINTS_PER_100_BDT = 1000
-DEFAULT_WITHDRAW_STEP_POINTS = 50
-
-
-def get_withdrawal_settings():
-    settings = db["bot_settings"].find_one({"_id": "main"}) or {}
-
-    try:
-        rate = int(settings.get("withdraw_points_per_100_bdt", DEFAULT_WITHDRAW_POINTS_PER_100_BDT))
-    except (TypeError, ValueError):
-        rate = DEFAULT_WITHDRAW_POINTS_PER_100_BDT
-
-    try:
-        minimum = int(settings.get("withdraw_min_points", MIN_WITHDRAW))
-    except (TypeError, ValueError):
-        minimum = MIN_WITHDRAW
-
-    try:
-        step = int(settings.get("withdraw_step_points", DEFAULT_WITHDRAW_STEP_POINTS))
-    except (TypeError, ValueError):
-        step = DEFAULT_WITHDRAW_STEP_POINTS
-
-    if rate <= 0:
-        rate = DEFAULT_WITHDRAW_POINTS_PER_100_BDT
-    if minimum <= 0:
-        minimum = MIN_WITHDRAW
-    if step <= 0:
-        step = DEFAULT_WITHDRAW_STEP_POINTS
-
-    return {
-        "points_per_100_bdt": rate,
-        "min_points": minimum,
-        "step_points": step,
-    }
-
-
-def points_to_bdt(points, points_per_100_bdt=None):
-    try:
-        points = int(points)
-    except (TypeError, ValueError):
-        return 0.0
-
-    if points_per_100_bdt is None:
-        points_per_100_bdt = get_withdrawal_settings()["points_per_100_bdt"]
-
-    try:
-        rate = int(points_per_100_bdt)
-    except (TypeError, ValueError):
-        rate = DEFAULT_WITHDRAW_POINTS_PER_100_BDT
-
-    if rate <= 0:
-        rate = DEFAULT_WITHDRAW_POINTS_PER_100_BDT
-
-    return round((points * 100.0) / rate, 2)
-
-
 # USER WITHDRAWAL LOCK
 # ============================================================
 
@@ -1985,7 +1925,6 @@ def reserve_withdrawal(
     amount,
     method="",
     payment_account="",
-    withdrawal_rate_points_per_100_bdt=None,
 ):
 
     amount = int(
@@ -2013,18 +1952,6 @@ def reserve_withdrawal(
     ):
 
         return None
-
-    settings = get_withdrawal_settings()
-    if withdrawal_rate_points_per_100_bdt is None:
-        withdrawal_rate_points_per_100_bdt = settings["points_per_100_bdt"]
-    try:
-        withdrawal_rate_points_per_100_bdt = int(withdrawal_rate_points_per_100_bdt)
-    except (TypeError, ValueError):
-        withdrawal_rate_points_per_100_bdt = settings["points_per_100_bdt"]
-    if withdrawal_rate_points_per_100_bdt <= 0:
-        withdrawal_rate_points_per_100_bdt = settings["points_per_100_bdt"]
-
-    bdt_amount = points_to_bdt(amount, withdrawal_rate_points_per_100_bdt)
 
     withdrawal_id = (
         "WD-"
@@ -2079,12 +2006,6 @@ def reserve_withdrawal(
 
         "amount":
             amount,
-
-        "bdt_amount":
-            bdt_amount,
-
-        "withdrawal_rate_points_per_100_bdt":
-            withdrawal_rate_points_per_100_bdt,
 
         "method":
             method,

@@ -165,12 +165,10 @@ def _mark_offerwall_submission_from_postback(user_id: int, reward_raw: Any, even
     submission for the same user and raw reward. Never invent a task association.
     """
     submissions = db["offerwall_task_submissions"]
-    # Only associate callbacks explicitly identified as task conversions.
-    # If the provider omits offer_type, we allow matching only when there is a
-    # single pending submission for the user.
-    normalized_type = str(offer_type or "").strip().lower()
-    if normalized_type and "task" not in normalized_type:
-        return None
+    # Offerwall.me may use different labels for task/app/video conversions.
+    # If the user has one pending provider task, safely associate the verified
+    # postback with that latest task; reward is still controlled by the signed
+    # provider callback, never by the client.
     pending_query = {"user_id": int(user_id), "status": "pending"}
     pending = list(submissions.find(
         pending_query,
@@ -359,17 +357,24 @@ def get_offerwallme_tasks(user_id: int, force_refresh: bool = False):
             ),
             0,
         )
+        title = str(_first(raw, ("title", "name", "task_title", "taskTitle"), "Offerwall Task") or "Offerwall Task")
+        description = str(_first(raw, ("description", "desc", "details", "task_description"), "") or "")
+        instructions = str(_first(raw, ("instructions", "instruction", "steps"), "") or "")
+        offer_type = str(_first(raw, ("offer_type", "offerType", "task_type", "taskType", "type", "category", "vertical"), "") or "")
+        platform = str(_first(raw, ("platform", "device", "devices", "os"), "") or "")
         result.append(
             dict(
                 raw,
-                title=str(_first(raw, ("title", "name", "task_title", "taskTitle"), "Offerwall Task") or "Offerwall Task"),
-                description=str(_first(raw, ("description", "desc", "details", "task_description"), "") or ""),
-                instructions=str(_first(raw, ("instructions", "instruction", "steps"), "") or ""),
+                title=title,
+                description=description,
+                instructions=instructions,
                 proof_type=str(_first(raw, ("proof_type", "proofType", "proof", "verification_type"), "Text") or "Text"),
                 proof_text=str(_first(raw, ("proof_text", "proofText", "proof_instruction", "proofInstruction"), "Submit the required proof") or "Submit the required proof"),
                 id=str(task_id),
                 reward=reward,
                 url=str(task_url or ""),
+                offer_type=offer_type,
+                platform=platform,
             )
         )
     return _cache_set(cache_key, result)
@@ -603,6 +608,101 @@ def sync_cpagrip_offers(user_id: int) -> int:
         logger.exception("CPAGrip offer sync failed | user=%s", user_id)
         return 0
 
+
+
+def _cpa_lead_member_reward_points(payout, user_id=None):
+    try:
+        payout_d = Decimal(str(payout))
+        share = Decimal(_env("CPALEAD_USER_REWARD_PERCENT", "40"))
+        rate = Decimal(_env("CPALEAD_POINTS_PER_USD", _env("REWARD_POINTS_PER_USD", "1000")))
+        if payout_d <= 0 or share <= 0 or rate <= 0:
+            return 0
+        points = int((payout_d * share / Decimal("100") * rate).quantize(Decimal("1")))
+        if user_id is not None:
+            try:
+                mult = Decimal(str(get_membership_multiplier(int(user_id))))
+                if mult > 0:
+                    points = int((Decimal(points) * mult).quantize(Decimal("1")))
+            except Exception:
+                pass
+        return max(1, points)
+    except (InvalidOperation, ValueError, TypeError):
+        return 0
+
+
+def _cpa_lead_offer_url(item, user_id):
+    url = str(item.get("link") or item.get("url") or "").strip()
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    q = parse_qs(parsed.query, keep_blank_values=True)
+    q["subid"] = [str(int(user_id))]
+    return urlunparse(parsed._replace(query=urlencode(q, doseq=True)))
+
+
+def _sync_cpa_lead_bd_offers(user_id: int):
+    if not _enabled("cpalead"):
+        return []
+    publisher_id = _env("CPALEAD_PUBLISHER_ID")
+    if not publisher_id:
+        return []
+    limit = max(1, min(100, int(_env("CPALEAD_BD_TASK_LIMIT", "20"))))
+    url = "https://www.cpalead.com/api/offers"
+    fields = "id,title,description,long_description,link,preview_link,amount,payout_currency,payout_type,countries,payouts_per_country,events,conversion_mode,verification_method,device,offer_rank"
+    try:
+        payload = _json_request(url, params={"id": publisher_id, "country": "BD", "limit": limit, "fields": fields}, timeout=12)
+        raw = payload if isinstance(payload, list) else (payload.get("offers") or payload.get("data") or payload.get("results") or []) if isinstance(payload, dict) else []
+        out = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            oid = str(item.get("id") or "").strip()
+            link = str(item.get("link") or "").strip()
+            if not oid or not link:
+                continue
+            payout = item.get("amount", 0)
+            # Country-specific payout takes precedence when supplied.
+            for row in (item.get("payouts_per_country") or []):
+                if isinstance(row, dict) and str(row.get("country") or row.get("country_iso") or "").upper() == "BD":
+                    payout = row.get("amount", payout)
+                    break
+            doc = {
+                "provider": "cpalead",
+                "offer_id": oid,
+                "title": str(item.get("title") or "BD Task"),
+                "description": str(item.get("description") or item.get("long_description") or ""),
+                "url": link,
+                "provider_reward": float(payout or 0),
+                "payout_currency": str(item.get("payout_currency") or "USD"),
+                "payout_type": str(item.get("payout_type") or "CPA"),
+                "countries": item.get("countries") or ["BD"],
+                "events": item.get("events") or [],
+                "updated_at": int(time.time()),
+            }
+            out.append(doc)
+            provider_offers.update_one({"provider":"cpalead", "offer_id":oid}, {"$set":doc}, upsert=True)
+        _cache_set(("cpalead_bd_offers", int(user_id)), out)
+        return out
+    except Exception:
+        logger.exception("CPAlead BD offer sync failed | user=%s", user_id)
+        return _cache_get_stale(("cpalead_bd_offers", int(user_id))) or []
+
+
+def get_cpa_lead_bd_offers(user_id: int, force_refresh=False):
+    key=("cpalead_bd_offers", int(user_id))
+    cached=None if force_refresh else _cache_get(key)
+    if cached is not None:
+        return cached
+    return _sync_cpa_lead_bd_offers(user_id)
+
+
+def get_cached_cpa_lead_bd_offers(user_id: int):
+    return _cache_get_stale(("cpalead_bd_offers", int(user_id)))
+
+
+def refresh_cpa_lead_bd_offers(user_id: int):
+    _cache_clear("cpalead_bd_offers", user_id)
+    return get_cpa_lead_bd_offers(user_id, force_refresh=True)
 
 def get_provider_offers(user_id: int, providers: Optional[Iterable[str]] = None, force_refresh: bool = False):
     providers = [p.lower() for p in (providers or ("cpagrip",))]
@@ -846,6 +946,68 @@ def process_postback(provider: str, params: Dict[str, Any]):
     provider = str(provider).lower().strip()
     if provider == "offerwallme":
         return _process_offerwallme_postback(params)
+    if provider == "cpalead":
+        if not _enabled("cpalead"):
+            return {"ok": False, "error": "provider_disabled"}
+        secret = _env("CPALEAD_POSTBACK_PASSWORD")
+        supplied = str(params.get("password") or "").strip()
+        if secret and (not supplied or not hmac.compare_digest(supplied, secret)):
+            return {"ok": False, "error": "invalid_signature"}
+        user_raw = params.get("subid") or params.get("sub_id") or params.get("user_id")
+        if user_raw in (None, ""):
+            return {"ok": False, "error": "missing_user"}
+        try:
+            user_id = int(str(user_raw).strip())
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid_user_id"}
+        if not get_user(user_id, create=False):
+            return {"ok": False, "error": "user_not_found"}
+        event_id = str(params.get("lead_id") or params.get("transaction_id") or params.get("event_id") or "").strip()
+        if not event_id:
+            return {"ok": False, "error": "missing_event_id"}
+        payout_raw = params.get("payout") if params.get("payout") not in (None, "") else params.get("event_payout", params.get("amount", 0))
+        try:
+            payout = Decimal(str(payout_raw))
+        except Exception:
+            return {"ok": False, "error": "invalid_payout"}
+        status = str(params.get("status") or params.get("event") or "approved").lower()
+        existing = provider_events.find_one({"provider":"cpalead", "event_id":event_id})
+        reversal = status in {"2","reversed","reverse","chargeback","charged_back","reject","rejected"} or payout < 0
+        if reversal:
+            if not existing:
+                return {"ok": True, "message": "reversal_ignored_unknown_event"}
+            if existing.get("reversed_at") or str(existing.get("status")) in {"2","reversed","reverse","chargeback","charged_back","reject","rejected"}:
+                return {"ok": True, "message": "duplicate_reversal_ignored"}
+            points = int(existing.get("points") or 0)
+            removed = remove_balance(user_id, points) if points > 0 else 0
+            debt=max(0, points-int(removed or 0))
+            if debt:
+                db["users"].update_one({"user_id":int(user_id)}, {"$inc":{"provider_debt":debt}})
+            provider_events.update_one({"_id":existing["_id"]}, {"$set":{"status":"2","reversed_at":int(time.time()),"reversal_removed":int(removed or 0),"reversal_debt":debt}})
+            return {"ok":True,"message":"reversal_recorded","removed":int(removed or 0),"debt":debt}
+        if existing:
+            return {"ok": True, "message": "duplicate_ignored"}
+        points = _cpa_lead_member_reward_points(payout, user_id)
+        if points <= 0:
+            return {"ok": False, "error": "invalid_reward"}
+        offer_id = str(params.get("campaign_id") or params.get("offer_id") or "").strip()
+        offer_title = str(params.get("campaign_name") or params.get("offer_name") or "BD Task")
+        doc={"provider":"cpalead","event_id":event_id,"user_id":user_id,"offer_id":offer_id,"offer_title":offer_title,"provider_reward":float(payout),"reward_raw":str(payout_raw),"points":points,"status":"approved","country":str(params.get("country_iso") or "BD"),"received_at":int(time.time()),"params":{str(k):str(v) for k,v in params.items()}}
+        try:
+            provider_events.insert_one(doc)
+        except Exception as exc:
+            if "duplicate" in str(exc).lower() or "e11000" in str(exc).lower():
+                return {"ok":True,"message":"duplicate_ignored"}
+            return {"ok":False,"error":"event_store_failed"}
+        if not add_balance(user_id, points):
+            provider_events.delete_one({"provider":"cpalead","event_id":event_id})
+            return {"ok":False,"error":"credit_failed"}
+        try:
+            record_transaction(user_id,"cpalead_conversion",points,event_id,metadata={"provider":"cpalead","offer_id":offer_id,"payout":str(payout_raw)})
+            add_activity(user_id,"🇧🇩 CPAlead task conversion",points)
+        except Exception:
+            logger.exception("CPAlead transaction/activity failed | event=%s",event_id)
+        return {"ok":True,"message":"credited","provider":"cpalead","event_id":event_id,"user_id":user_id,"points":points}
     if provider != "cpagrip" or not _enabled("cpagrip"):
         return {"ok": False, "error": "provider_disabled"}
 
@@ -978,6 +1140,8 @@ def provider_status():
         "cpagrip": _enabled("cpagrip") and bool(_env("CPAGRIP_OFFERS_API_URL")),
         "cpagrip_postback": bool(_env("CPAGRIP_POSTBACK_PASSWORD") or _env("CPAGRIP_POSTBACK_SECRET")),
         "offerwallme": _enabled("offerwallme"),
+        "cpalead": _enabled("cpalead") and bool(_env("CPALEAD_PUBLISHER_ID")),
+        "cpalead_postback": bool(_env("CPALEAD_POSTBACK_PASSWORD")),
         "offerwallme_postback": bool(_env("OFFERWALLME_POSTBACK_SECRET")),
         "offerwallme_points_per_usd": _env("OFFERWALLME_POINTS_PER_USD", "1000"),
         "offerwallme_reward_unit": _env("OFFERWALLME_REWARD_UNIT", "points"),

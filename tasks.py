@@ -494,6 +494,37 @@ async def complete_task_async(user_id, task_id, bot):
     return True, "OK"
 
 
+def _offerwall_task_category(task):
+    """Classify provider tasks using provider metadata first, then title/text keywords."""
+    if not isinstance(task, dict):
+        return "other"
+    raw = " ".join(str(task.get(k) or "") for k in ("offer_type", "task_type", "type", "category", "vertical", "title", "description", "instructions", "platform")).lower()
+    if any(k in raw for k in ("video", "watch ad", "rewarded ad", "reward video", "ad view", "watch video")):
+        return "video"
+    if any(k in raw for k in ("install", "app install", "download app", "mobile app", "android app", "ios app", "cpi")):
+        return "app"
+    if any(k in raw for k in ("signup", "sign up", "register", "registration", "create account", "lead", "join", "follow", "like", "subscribe", "visit", "click", "simple task")):
+        return "easy"
+    if any(k in raw for k in ("survey", "questionnaire", "poll")):
+        return "survey"
+    return "other"
+
+
+def _offerwall_task_category_label(category):
+    return {
+        "easy": "🟢 Easy Tasks",
+        "app": "📱 App Install",
+        "video": "🎬 Video Ads",
+        "survey": "📝 Surveys",
+        "other": "💰 Other Tasks",
+    }.get(str(category), "💰 Other Tasks")
+
+
+def _offerwall_category_tasks(user_id, category):
+    tasks = _get_offerwall_tasks_cached(user_id)
+    return [t for t in tasks if _offerwall_task_category(t) == category]
+
+
 def _get_offerwall_tasks_cached(user_id):
     try:
         tasks = get_cached_offerwallme_tasks(int(user_id))
@@ -543,7 +574,7 @@ async def _refresh_tasks_in_background(query, user_id: int):
         _BACKGROUND_REFRESHING.discard(key)
 
 
-def tasks_menu(user_id=None, offerwall_tasks=None):
+def tasks_menu(user_id=None, offerwall_tasks=None, offerwall_category=None):
     buttons=[]
     for task in get_tasks(user_id=user_id):
         available = task_available(user_id, task["id"]) if user_id else True
@@ -552,15 +583,19 @@ def tasks_menu(user_id=None, offerwall_tasks=None):
         try:
             if offerwall_tasks is None:
                 offerwall_tasks = _get_offerwall_tasks_cached(user_id)
-            for task in offerwall_tasks[:OFFERWALLME_TASK_LIMIT]:
-                task_id = str(task.get("id") or "")
-                title = str(task.get("title") or "Offerwall Task")
-                reward = _offerwallme_reward_points(task.get("reward", task.get("payout", task.get("amount", 0))), user_id)
-                callback = f"owtask_{task_id}"
-                if task_id and len(callback) <= 64:
-                    buttons.append([InlineKeyboardButton(f"💰 {title[:28]} (+{reward})", callback_data=callback)])
+            # Provider tasks are grouped into simple, app, video and survey buckets.
+            buttons.append([
+                InlineKeyboardButton("🟢 Easy Tasks", callback_data="owcat_easy"),
+                InlineKeyboardButton("📱 App Install", callback_data="owcat_app"),
+            ])
+            buttons.append([
+                InlineKeyboardButton("🎬 Video Ads", callback_data="owcat_video"),
+                InlineKeyboardButton("📝 Surveys", callback_data="owcat_survey"),
+            ])
+            if offerwall_category:
+                buttons.append([InlineKeyboardButton("💰 Other Tasks", callback_data="owcat_other")])
         except Exception:
-            logger.exception("Offerwall.me task menu fetch failed | user=%s", user_id)
+            logger.exception("Offerwall.me task category menu failed | user=%s", user_id)
     buttons.append([InlineKeyboardButton("🏠 Home", callback_data="home")])
     return InlineKeyboardMarkup(buttons)
 
@@ -647,6 +682,36 @@ async def task_complete_callback(update, context):
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks",callback_data="tasks")],[InlineKeyboardButton("🏠 Home",callback_data="home")]]), parse_mode="Markdown")
 
 
+async def offerwallme_category_callback(update, context):
+    q = update.callback_query
+    if not q or not str(q.data).startswith("owcat_"):
+        return
+    await q.answer()
+    category = str(q.data)[len("owcat_"):]
+    allowed = {"easy", "app", "video", "survey", "other"}
+    if category not in allowed:
+        return
+    tasks = _offerwall_category_tasks(q.from_user.id, category)
+    label = _offerwall_task_category_label(category)
+    lines = [f"{label}", "", "Complete genuine offers through Offerwall.me. Rewards are credited only after verified provider conversion.", ""]
+    buttons = []
+    if tasks:
+        for task in tasks[:OFFERWALLME_TASK_LIMIT]:
+            task_id = str(task.get("id") or "")
+            if not task_id:
+                continue
+            title = str(task.get("title") or "Offerwall Task")
+            reward = _offerwallme_reward_points(task.get("reward", task.get("payout", task.get("amount", 0))), q.from_user.id)
+            buttons.append([InlineKeyboardButton(f"🎯 {title[:28]} (+{reward})", callback_data=f"owtask_{task_id}")])
+    else:
+        lines.append("😔 No matching offers are available for you right now.")
+        if category == "video":
+            lines.append("Video offers depend on the current Offerwall.me inventory, country and device.")
+    lines += ["", "Provider inventory changes automatically; a task may disappear after it is completed or expires."]
+    buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
+    await q.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+
 async def offerwallme_task_callback(update, context):
     q = update.callback_query
     if not q or not str(q.data).startswith("owtask_"):
@@ -661,147 +726,72 @@ async def offerwallme_task_callback(update, context):
     if not task:
         await q.edit_message_text("⚠️ This Offerwall.me task is no longer available.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks", callback_data="tasks")]]))
         return
+
+    # No screenshot/proof step: opening a provider task creates one pending
+    # conversion slot. The actual reward is credited only when Offerwall.me
+    # sends a verified postback for this user. Keep only the latest pending
+    # task to avoid ambiguous conversion matching.
+    try:
+        reward_raw = str(task.get("reward", task.get("payout", task.get("amount", 0))) or "0")
+        db["offerwall_task_submissions"].update_many(
+            {"user_id": int(q.from_user.id), "status": "pending"},
+            {"$set": {"status": "abandoned", "abandoned_at": int(time.time())}},
+        )
+        mark_offerwall_task_submission(
+            q.from_user.id, task_id, "pending",
+            submitted_at=int(time.time()),
+            provider_reward_raw=reward_raw,
+            task_title=str(task.get("title") or "")[:200],
+            proof_kind="none",
+            proof_text="",
+        )
+    except Exception:
+        logger.exception("Could not create Offerwall.me pending task slot | user=%s task=%s", q.from_user.id, task_id)
+
     submission = get_offerwall_task_submission(q.from_user.id, task_id)
-    submission_status = str((submission or {}).get("status") or "").lower()
-    reward = _offerwallme_reward_points(task.get("reward"), q.from_user.id)
+    submission_status = str((submission or {}).get("status") or "pending").lower()
+    reward = _offerwallme_reward_points(task.get("reward", task.get("payout", task.get("amount", 0))), q.from_user.id)
+
     def _display_text(value):
         return (str(value or "").replace("\\n", "\n").replace("<p>", "").replace("</p>", "").strip())
 
     instructions = _display_text(task.get("instructions") or task.get("description"))
-    proof_type = _display_text(task.get("proof_type") or "Text")
-    proof_text = _display_text(task.get("proof_text") or "Submit the required proof")
-    context.user_data.pop("offerwallme_pending_task", None)
     context.user_data["offerwallme_task_preview"] = task_id
+    context.user_data.pop("offerwallme_pending_task", None)
     text = f"🎯 **{_md(_display_text(task.get('title','Offerwall Task')))}**\n\n"
     description = _display_text(task.get("description"))
     if description:
         text += f"{_md(description)}\n\n"
     if instructions:
         text += f"📋 **Instructions:**\n{_md(instructions)}\n\n"
-    text += f"💰 Reward: +{reward} Points\n🔐 Proof type: {_md(proof_type)}\n✍️ {_md(proof_text)}"
+    category = _offerwall_task_category(task)
+    category_label = _offerwall_task_category_label(category)
+    platform = str(task.get("platform") or "").strip()
+    text += f"💰 Reward: +{reward} Points\n🏷 Type: {_md(category_label)}"
+    if platform:
+        text += f"\n📱 Platform: {_md(platform)}"
+    text += "\n\n⏳ **Status:** Pending — complete the task on Offerwall.me. Your Points will be added automatically after the verified postback."
+
     buttons = []
     task_url = str(task.get("url") or task.get("link") or "").strip()
     if task_url:
         buttons.append([InlineKeyboardButton("🚀 Open Task", url=task_url)])
-    if submission_status == "pending":
-        text += "\n\n🕒 **Status:** Your proof is currently under review. Please wait for verification."
-    elif submission_status == "rewarded":
-        text += "\n\n✅ **Status:** This task has already been verified and rewarded."
-    else:
-        buttons.append([InlineKeyboardButton("📨 Submit Proof", callback_data=f"owtask_proof_{task_id}")])
+    if submission_status == "rewarded":
+        text = text.replace("⏳ **Status:** Pending — complete the task on Offerwall.me. Your Points will be added automatically after the verified postback.", "✅ **Status:** Verified & Rewarded — Points have been added.")
     buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
-    await q.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown",
-    )
-
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 
 async def offerwallme_task_proof_callback(update, context):
     q = update.callback_query
-    if not q or not str(q.data).startswith("owtask_proof_"):
-        return
-    task_id = str(q.data)[len("owtask_proof_"):]
-    existing_submission = get_offerwall_task_submission(q.from_user.id, task_id)
-    if str((existing_submission or {}).get("status") or "").lower() == "pending":
-        await q.answer("🕒 Your proof is already under review.", show_alert=True)
-        return
-    if str((existing_submission or {}).get("status") or "").lower() == "rewarded":
-        await q.answer("✅ This task is already rewarded.", show_alert=True)
-        return
-    await q.answer()
-    context.user_data["offerwallme_pending_task"] = task_id
-    try:
-        task = next((t for t in _get_offerwall_tasks_cached(q.from_user.id) if str(t.get("id")) == task_id), {})
-    except Exception:
-        task = {}
-    proof_type = str(task.get("proof_type") or "Text").strip().lower()
-    prompt = "Send the required screenshot/image in the next message." if "image" in proof_type or "screenshot" in proof_type else "Send your proof in the next message."
-    await q.edit_message_text(
-        f"📨 **SUBMIT TASK PROOF**\n\n{prompt}\n\n"
-        "⚠️ Submit only genuine proof. The provider/admin decides approval, and rewards are credited only after verified completion.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="tasks")]]),
-        parse_mode="Markdown",
-    )
-
+    if q:
+        await q.answer("Proof is not required. Just complete the task; verified rewards are automatic.", show_alert=True)
 
 
 async def offerwallme_proof_message_handler(update, context):
-    task_id = context.user_data.get("offerwallme_pending_task")
-    if not task_id or not update.effective_message or not update.effective_user:
-        return False
-    message = update.effective_message
-    if message.photo:
-        photo = message.photo[-1]
-        caption = str(message.caption or "").strip()
-        # Offerwall.me cannot fetch a Telegram file_id directly. Resolve the
-        # photo to Telegram's HTTPS file URL before submitting proof.
-        proof = f"telegram_photo_file_id:{photo.file_id}"
-        try:
-            proof_url, _proof_id = create_offerwall_task_proof(update.effective_user.id, str(task_id), photo.file_id, caption)
-            proof = f"proof_url:{proof_url}"
-        except Exception:
-            logger.exception("Could not register secure Telegram proof proxy | user=%s task=%s", update.effective_user.id, task_id)
-            await update.effective_message.reply_text(
-                "❌ Image proof could not be prepared securely right now. Please try sending the screenshot again.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Tasks", callback_data="tasks")]]),
-            )
-            return True
-    else:
-        proof = str(message.text or "").strip()
-    if not proof:
-        return False
-
-    # Fetch the current task reward so the later verified postback can be matched
-    # to this pending submission without trusting client-supplied values.
-    provider_reward_raw = None
-    current_task = None
-    try:
-        current_tasks = _get_offerwall_tasks_cached(update.effective_user.id)
-        current_task = next((t for t in current_tasks if str(t.get("id")) == str(task_id)), None)
-        if current_task:
-            provider_reward_raw = str(current_task.get("reward"))
-    except Exception:
-        logger.exception("Could not resolve task reward before proof submit | user=%s task=%s", update.effective_user.id, task_id)
-
-    result = submit_offerwallme_task_proof(update.effective_user.id, str(task_id), proof)
-    if result.get("ok"):
-        context.user_data.pop("offerwallme_pending_task", None)
-        mark_offerwall_task_submission(
-            update.effective_user.id, str(task_id), "pending",
-            submitted_at=_now(), provider_reward_raw=provider_reward_raw,
-            task_title=str((current_task or {}).get("title") or "")[:200],
-            provider_response=result.get("raw"), proof_kind="image" if message.photo else "text",
-            proof_text=proof[:2000],
-        )
-        status = str(result.get("status") or "").strip().lower()
-        if status in {"pending", "submitted", "received"}:
-            reply = (
-                "✅ Proof submitted successfully.\n\n"
-                "Offerwall.me received your proof and may review it before approval. "
-                "Points are credited only after the verified postback."
-            )
-        else:
-            reply = (
-                "✅ Proof submitted successfully.\n\n"
-                "Offerwall.me will approve it instantly or after advertiser review. "
-                "Points are credited only after the verified postback."
-            )
-        await update.effective_message.reply_text(
-            reply,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")]]),
-        )
-    else:
-        # Keep the pending task so the user can retry without reopening the task.
-        error = str(result.get("message") or result.get("error") or "temporary provider error")
-        logger.warning("Offerwall.me proof submission rejected | user=%s task=%s error=%s", update.effective_user.id, task_id, error)
-        await update.effective_message.reply_text(
-            "❌ Proof submission failed right now. Please send the proof again or reopen the task later.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Tasks", callback_data="tasks")]]),
-        )
-    return True
+    # Offerwall.me provider tasks no longer require user-submitted screenshots/proof.
+    return False
 
 
-HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback,"offerwallme_task_callback":offerwallme_task_callback,"offerwallme_task_proof_callback":offerwallme_task_proof_callback}
-__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","offerwallme_task_callback","offerwallme_task_proof_callback","offerwallme_proof_message_handler","HANDLER_FUNCTIONS","ensure_task_indexes"]
+HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback,"offerwallme_category_callback":offerwallme_category_callback,"offerwallme_task_callback":offerwallme_task_callback,"offerwallme_task_proof_callback":offerwallme_task_proof_callback}
+__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","offerwallme_category_callback","offerwallme_task_callback","offerwallme_task_proof_callback","offerwallme_proof_message_handler","HANDLER_FUNCTIONS","ensure_task_indexes"]

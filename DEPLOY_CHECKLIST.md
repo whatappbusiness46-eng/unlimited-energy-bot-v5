@@ -17,3 +17,21 @@
 
 ### Task verification
 Task verification is OFF by default. Set Render environment variable `TASK_VERIFICATION_ENABLED=true` to enable configured verification checks; leave it `false` to allow admin-controlled task completion without automatic verification.
+
+## 🇧🇩 CPAlead BD Tasks
+- Add `CPALEAD_ENABLED=true`
+- Add `CPALEAD_PUBLISHER_ID`
+- Add `CPALEAD_POSTBACK_PASSWORD`
+- Add `CPALEAD_USER_REWARD_PERCENT=40`
+- Add `CPALEAD_POINTS_PER_USD=1000`
+- Add `CPALEAD_BD_TASK_LIMIT=20`
+- Configure CPAlead publisher postback to `/postback/cpalead` using the macros documented in `ADDON_SETUP_NOTES.md`.
+- Test one real/sandbox conversion and confirm the Points are credited once and duplicate callbacks are ignored.
+
+
+## Offerwall.me-only Tasks
+- Keep `OFFERWALLME_ENABLED=true`.
+- Keep the existing Offerwall.me API key, bearer token, country and postback secret in Render ENV.
+- Offerwall.me tasks are grouped into Easy Tasks, App Install, Video Ads, Surveys and Other Tasks based on provider metadata/title.
+- Video Ads will appear only when Offerwall.me's current task inventory returns a matching video/rewarded-ad offer.
+- Do not hardcode fake task links or rewards.

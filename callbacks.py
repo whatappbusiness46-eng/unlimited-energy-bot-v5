@@ -86,7 +86,7 @@ from earn import (
     claim_test_task,
 )
 
-from tasks import tasks_page as task_menu_page, task_callback, task_complete_callback, offerwallme_task_callback, offerwallme_task_proof_callback
+from tasks import tasks_page as task_menu_page, task_callback, task_complete_callback, offerwallme_category_callback, offerwallme_task_callback, offerwallme_task_proof_callback
 
 from payments import method_keyboard, payment_instructions, create_payment, submit_reference, get_payment
 from config import PREMIUM_CASH_PRICE, VIP1_CASH_PRICE, VIP2_CASH_PRICE, VIP3_CASH_PRICE, VIP4_CASH_PRICE, VIP5_CASH_PRICE
@@ -1366,6 +1366,8 @@ async def button_callback(
         await offers_page(update, context)
         return
 
+    if data.startswith("bdtask_"):
+        await bd_task_callback(update, context); return
     if data.startswith("provider_offer_"):
         await provider_offer_callback(update, context)
         return
@@ -1461,6 +1463,10 @@ async def button_callback(
     # ========================================================
     if data == "tasks":
         await task_menu_page(update, context)
+        return
+
+    if data.startswith("owcat_"):
+        await offerwallme_category_callback(update, context)
         return
 
     if data.startswith("owtask_proof_"):
