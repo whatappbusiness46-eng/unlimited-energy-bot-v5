@@ -650,8 +650,30 @@ def _sync_cpa_lead_bd_offers(user_id: int):
     url = "https://www.cpalead.com/api/offers"
     fields = "id,title,description,long_description,link,preview_link,amount,payout_currency,payout_type,countries,payouts_per_country,events,conversion_mode,verification_method,device,offer_rank"
     try:
-        payload = _json_request(url, params={"id": publisher_id, "country": "BD", "limit": limit, "fields": fields}, timeout=12)
-        raw = payload if isinstance(payload, list) else (payload.get("offers") or payload.get("data") or payload.get("results") or []) if isinstance(payload, dict) else []
+        # CPAlead's current Publisher Offers API supports country/device/type filters.
+        # Keep the tracking link returned by CPAlead; only add our Telegram subid later.
+        payload = _json_request(
+            url,
+            params={
+                "id": publisher_id,
+                "country": "BD",
+                # Do not use device=user here because the request originates
+                # from the Render server, not the Telegram user's device.
+                # Fetch all device types and let CPAlead's returned tracking
+                # link perform the correct offer targeting.
+                "type": "cpa,cpi,cpe",
+                "limit": limit,
+                "fields": fields,
+            },
+            timeout=12,
+        )
+        raw = []
+        if isinstance(payload, list):
+            raw = payload
+        elif isinstance(payload, dict):
+            raw = payload.get("offers") or payload.get("data") or payload.get("results") or []
+            if isinstance(raw, dict):
+                raw = raw.get("offers") or raw.get("data") or raw.get("results") or []
         out = []
         for item in raw:
             if not isinstance(item, dict):
@@ -661,11 +683,16 @@ def _sync_cpa_lead_bd_offers(user_id: int):
             if not oid or not link:
                 continue
             payout = item.get("amount", 0)
-            # Country-specific payout takes precedence when supplied.
-            for row in (item.get("payouts_per_country") or []):
-                if isinstance(row, dict) and str(row.get("country") or row.get("country_iso") or "").upper() == "BD":
-                    payout = row.get("amount", payout)
-                    break
+            # CPAlead currently returns payouts_per_country as a BD-keyed map,
+            # but older responses may return a list of country rows. Support both.
+            country_payouts = item.get("payouts_per_country") or {}
+            if isinstance(country_payouts, dict):
+                payout = country_payouts.get("BD", country_payouts.get("bd", payout))
+            elif isinstance(country_payouts, list):
+                for row in country_payouts:
+                    if isinstance(row, dict) and str(row.get("country") or row.get("country_iso") or "").upper() == "BD":
+                        payout = row.get("amount", payout)
+                        break
             doc = {
                 "provider": "cpalead",
                 "offer_id": oid,
@@ -720,7 +747,14 @@ def get_provider_offers(user_id: int, providers: Optional[Iterable[str]] = None,
             _sync_cpa_lead_bd_offers(user_id)
     disabled = {str(x["offer_id"]) for x in provider_disabled_offers.find({"provider": {"$in": providers}}, {"offer_id": 1})}
     docs = provider_offers.find({"provider": {"$in": providers}}, {"_id": 0}).sort("updated_at", -1).limit(100)
-    return _cache_set(cache_key, [dict(x) for x in docs if str(x.get("offer_id")) not in disabled])
+    result = [dict(x) for x in docs if str(x.get("offer_id")) not in disabled]
+    # The public Offers page reads its short-lived cache through
+    # get_cached_provider_offers(). Keep that cache populated after a live
+    # provider sync; otherwise the provider can return offers successfully
+    # while the UI still says "No live offers".
+    if "cpagrip" in providers:
+        _cache_set(("cpagrip_offers", int(user_id)), result)
+    return _cache_set(cache_key, result)
 
 
 def set_provider_offer_enabled(provider: str, offer_id: str, enabled: bool):

@@ -719,7 +719,7 @@ async def rewards_tasks_callback(update, context):
         "🎁 **REWARDS TASKS**\n\n"
         "Choose a task type below.\n"
         "Rewards are credited after verified Offerwall.me conversion.\n\n"
-        f"📋 Available Offers: {len(tasks)}"
+        f"📋 Available Tasks: {len(tasks)}"
     )
     buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
