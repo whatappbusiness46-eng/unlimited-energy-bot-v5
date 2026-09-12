@@ -21,6 +21,8 @@ from provider_integrations import (
     get_offerwallme_tasks, get_cached_offerwallme_tasks, provider_cache_fresh,
     refresh_offerwallme_tasks, submit_offerwallme_task_proof, _offerwallme_reward_points,
     create_offerwall_task_proof, get_offerwall_task_submission, mark_offerwall_task_submission,
+    get_cpa_lead_bd_offers, get_cached_cpa_lead_bd_offers, refresh_cpa_lead_bd_offers,
+    _cpa_lead_member_reward_points, _cpa_lead_offer_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -586,17 +588,8 @@ def tasks_menu(user_id=None, offerwall_tasks=None, offerwall_category=None):
         try:
             if offerwall_tasks is None:
                 offerwall_tasks = _get_offerwall_tasks_cached(user_id)
-            # Provider tasks are grouped into simple, app, video and survey buckets.
-            buttons.append([
-                InlineKeyboardButton("🟢 Easy Tasks", callback_data="owcat_easy"),
-                InlineKeyboardButton("📱 App Install", callback_data="owcat_app"),
-            ])
-            buttons.append([
-                InlineKeyboardButton("🎬 Video Ads", callback_data="owcat_video"),
-                InlineKeyboardButton("📝 Surveys", callback_data="owcat_survey"),
-            ])
-            if offerwall_category:
-                buttons.append([InlineKeyboardButton("💰 Other Tasks", callback_data="owcat_other")])
+            # CPAlead BD offers are shown under one clean member-facing category.
+            buttons.append([InlineKeyboardButton("🇧🇩 BD Advance Tasks", callback_data="cpalead_tasks")])
         except Exception:
             logger.exception("Offerwall.me task category menu failed | user=%s", user_id)
     buttons.append([InlineKeyboardButton("🏠 Home", callback_data="home")])
@@ -664,6 +657,66 @@ async def task_complete_callback(update, context):
     else:
         text = f"🎉 **TASK COMPLETED!**\n\n🎯 {_md(task.get('title',''))}\n💰 Reward credited successfully." if ok else f"❌ **Task not completed**\n\n{msg}"
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks",callback_data="tasks")],[InlineKeyboardButton("🏠 Home",callback_data="home")]]), parse_mode="Markdown")
+
+
+async def cpalead_tasks_callback(update, context):
+    q = update.callback_query
+    if not q or q.data != "cpalead_tasks":
+        return
+    await q.answer()
+    user_id = int(q.from_user.id)
+    offers = list(get_cached_cpa_lead_bd_offers(user_id) or [])
+    if not offers:
+        try:
+            offers = list(await asyncio.to_thread(refresh_cpa_lead_bd_offers, user_id) or [])
+        except Exception:
+            logger.exception("CPAlead BD task refresh failed | user=%s", user_id)
+            offers = []
+    lines = ["🇧🇩 **BD Advance Tasks**", "", "Complete the task genuinely. Reward is credited after verified provider conversion.", ""]
+    buttons = []
+    for offer in offers[:20]:
+        oid = str(offer.get("offer_id") or "").strip()
+        if not oid:
+            continue
+        reward = _cpa_lead_member_reward_points(offer.get("provider_reward", 0), user_id)
+        title = str(offer.get("title") or "BD Task").strip()
+        buttons.append([InlineKeyboardButton(f"🎯 {title[:30]} (+{reward})", callback_data=f"cpalead_{oid}")])
+    if not buttons:
+        lines.append("😔 No BD tasks are available right now.")
+    buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
+    await q.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+
+async def cpalead_task_callback(update, context):
+    q = update.callback_query
+    if not q or not str(q.data).startswith("cpalead_") or q.data == "cpalead_tasks":
+        return
+    await q.answer()
+    offer_id = str(q.data)[len("cpalead_"):]
+    offers = list(get_cached_cpa_lead_bd_offers(q.from_user.id) or [])
+    offer = next((x for x in offers if str(x.get("offer_id")) == offer_id), None)
+    if not offer:
+        try:
+            offers = list(await asyncio.to_thread(refresh_cpa_lead_bd_offers, int(q.from_user.id)) or [])
+            offer = next((x for x in offers if str(x.get("offer_id")) == offer_id), None)
+        except Exception:
+            offer = None
+    if not offer:
+        await q.edit_message_text("⚠️ This BD task is no longer available.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD Advance Tasks", callback_data="cpalead_tasks")]]))
+        return
+    reward = _cpa_lead_member_reward_points(offer.get("provider_reward", 0), q.from_user.id)
+    title = str(offer.get("title") or "BD Task")
+    description = str(offer.get("description") or "").replace("\n", "\n").strip()
+    url = _cpa_lead_offer_url(offer, q.from_user.id)
+    text = f"🎯 **{_md(title)}**\n\n"
+    if description:
+        text += f"{_md(description)}\n\n"
+    text += f"💰 Reward: +{reward} Points\n🇧🇩 Type: BD Advance Task\n\n⏳ Status: Pending — complete the task. Points will be added automatically after provider verification."
+    buttons = []
+    if url:
+        buttons.append([InlineKeyboardButton("🚀 Open Task", url=url)])
+    buttons.append([InlineKeyboardButton("⬅️ BD Advance Tasks", callback_data="cpalead_tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 
 async def offerwallme_category_callback(update, context):
@@ -777,5 +830,5 @@ async def offerwallme_proof_message_handler(update, context):
     return False
 
 
-HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback,"offerwallme_category_callback":offerwallme_category_callback,"offerwallme_task_callback":offerwallme_task_callback,"offerwallme_task_proof_callback":offerwallme_task_proof_callback}
-__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","offerwallme_category_callback","offerwallme_task_callback","offerwallme_task_proof_callback","offerwallme_proof_message_handler","HANDLER_FUNCTIONS","ensure_task_indexes"]
+HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback,"cpalead_tasks_callback":cpalead_tasks_callback,"cpalead_task_callback":cpalead_task_callback,"offerwallme_category_callback":offerwallme_category_callback,"offerwallme_task_callback":offerwallme_task_callback,"offerwallme_task_proof_callback":offerwallme_task_proof_callback}
+__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","cpalead_tasks_callback","cpalead_task_callback","offerwallme_category_callback","offerwallme_task_callback","offerwallme_task_proof_callback","offerwallme_proof_message_handler","HANDLER_FUNCTIONS","ensure_task_indexes"]

@@ -1,5 +1,6 @@
 import time
 import logging
+import html
 
 from telegram import (
     Update,
@@ -592,7 +593,7 @@ async def admin_join_bonus_page(update: Update, context: ContextTypes.DEFAULT_TY
 
     total_bdt = sum(int(c.get("bdt", 0) or 0) for c in claims_collection.find({}, {"bdt": 1, "_id": 0}))
     text = (
-        f"🎁 **JOIN BONUS CLAIMS**\n"
+        "🎁 <b>JOIN BONUS CLAIMS</b>\n"
         f"📄 Page {page}/{total_pages} • Total Claims: {total}\n"
         f"💰 Total Bonus Paid: ৳{total_bdt}\n\n"
     )
@@ -609,11 +610,12 @@ async def admin_join_bonus_page(update: Update, context: ContextTypes.DEFAULT_TY
             name = " ".join(x for x in (first, last) if x).strip() or username or "Unknown"
             if username and username not in name:
                 name += f" (@{username})"
+            safe_name = html.escape(name[:60])
             bdt = int(claim.get("bdt", 0) or 0)
             sequence = int(claim.get("sequence", i) or i)
             text += (
-                f"**{i}. {name[:60]}**\n"
-                f"🆔 `{uid}` • 🎁 Bonus: **৳{bdt}** • 🏷️ Join #{sequence}\n\n"
+                f"<b>{i}. {safe_name}</b>\n"
+                f"🆔 <code>{uid}</code> • 🎁 Bonus: <b>৳{bdt}</b> • 🏷️ Join #{sequence}\n\n"
             )
 
     buttons = []
@@ -628,11 +630,20 @@ async def admin_join_bonus_page(update: Update, context: ContextTypes.DEFAULT_TY
     buttons.append([InlineKeyboardButton("🔙 Users", callback_data="admin_users")])
 
     await query.answer()
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown",
-    )
+    try:
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        # Refresh/duplicate callbacks can arrive with identical content.
+        # Do not let a harmless Telegram "message is not modified" error
+        # break the admin callback flow.
+        if "message is not modified" in str(exc).lower():
+            logger.info("Join bonus claims page unchanged: %s", exc)
+            return
+        raise
 
 
 # ==================================================
