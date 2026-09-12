@@ -422,8 +422,7 @@ async def active_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE)
     for pos, user in enumerate(top_users, 1):
         icon = medals[pos-1] if pos <= 3 else f"{pos}."
         name = str(user.get("first_name") or user.get("last_name") or "Member").replace("*", "\\*").replace("_", "\\_").replace("`", "\\`")
-        score = int(user.get("campaign_score", 0) or 0)
-        lines.append(f"{icon} {name} — **{score}** score")
+        lines.append(f"{icon} {name}")
     lines += ["", "👑🎁 VIP Gift will be given according to campaign performance."]
     await update.effective_message.reply_text("\n".join(lines), reply_markup=main_menu(), parse_mode="Markdown")
 

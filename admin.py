@@ -467,6 +467,20 @@ async def admin_users(
 
                 [
                     InlineKeyboardButton(
+                        "👥 All Users (Name / UID / Score)",
+                        callback_data="admin_users_page_1",
+                    )
+                ],
+
+                [
+                    InlineKeyboardButton(
+                        "🎁 Join Bonus Claims (৳50/৳20/৳5)",
+                        callback_data="admin_join_bonus_page_1",
+                    )
+                ],
+
+                [
+                    InlineKeyboardButton(
                         "🔍 Find User",
                         callback_data="admin_find_user",
                     )
@@ -482,6 +496,141 @@ async def admin_users(
             ]
         ),
 
+        parse_mode="Markdown",
+    )
+
+
+# ==================================================
+# ALL USERS — ADMIN ONLY
+# ==================================================
+
+async def admin_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1):
+    query = update.callback_query
+
+    if not query or not admin_only(query.from_user.id):
+        if query:
+            await query.answer("🚫 Admin only.", show_alert=True)
+        return
+
+    page = max(1, int(page))
+    per_page = 10
+    total = users.count_documents({})
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    skip = (page - 1) * per_page
+
+    user_list = list(
+        users.find({}, {"_id": 0})
+        .sort("last_active", -1)
+        .skip(skip)
+        .limit(per_page)
+    )
+
+    text = f"👥 **ALL USERS**\n📄 Page {page}/{total_pages} • Total: {total}\n\n"
+    if not user_list:
+        text += "No users found."
+    else:
+        for i, user in enumerate(user_list, start=skip + 1):
+            uid = user.get("user_id", "Unknown")
+            first = str(user.get("first_name") or "").strip()
+            last = str(user.get("last_name") or "").strip()
+            username = str(user.get("username") or "").strip()
+            name = " ".join(x for x in (first, last) if x).strip() or username or "Unknown"
+            if username and username not in name:
+                name += f" (@{username})"
+            score = int(user.get("campaign_score", 0) or 0)
+            text += f"**{i}. {name[:70]}**\n🆔 `{uid}` • 🏆 Score: **{score}**\n\n"
+
+    buttons = []
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"admin_users_page_{page-1}"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"admin_users_page_{page+1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data=f"admin_users_page_{page}")])
+    buttons.append([InlineKeyboardButton("🔙 Users", callback_data="admin_users")])
+
+    await query.answer()
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="Markdown",
+    )
+
+
+# ==================================================
+# JOIN BONUS CLAIMS — ADMIN ONLY
+# ==================================================
+
+async def admin_join_bonus_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1):
+    query = update.callback_query
+
+    if not query or not admin_only(query.from_user.id):
+        if query:
+            await query.answer("🚫 Admin only.", show_alert=True)
+        return
+
+    page = max(1, int(page))
+    per_page = 10
+    claims_collection = db["join_bonus_claims"]
+    total = claims_collection.count_documents({})
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    skip = (page - 1) * per_page
+
+    claims = list(
+        claims_collection.find(
+            {},
+            {"_id": 0, "user_id": 1, "sequence": 1, "bdt": 1, "claimed_at": 1},
+        )
+        .sort("sequence", 1)
+        .skip(skip)
+        .limit(per_page)
+    )
+
+    total_bdt = sum(int(c.get("bdt", 0) or 0) for c in claims_collection.find({}, {"bdt": 1, "_id": 0}))
+    text = (
+        f"🎁 **JOIN BONUS CLAIMS**\n"
+        f"📄 Page {page}/{total_pages} • Total Claims: {total}\n"
+        f"💰 Total Bonus Paid: ৳{total_bdt}\n\n"
+    )
+
+    if not claims:
+        text += "No Join Bonus claims found."
+    else:
+        for i, claim in enumerate(claims, start=skip + 1):
+            uid = int(claim.get("user_id", 0) or 0)
+            user = users.find_one({"user_id": uid}, {"_id": 0, "first_name": 1, "last_name": 1, "username": 1}) or {}
+            first = str(user.get("first_name") or "").strip()
+            last = str(user.get("last_name") or "").strip()
+            username = str(user.get("username") or "").strip()
+            name = " ".join(x for x in (first, last) if x).strip() or username or "Unknown"
+            if username and username not in name:
+                name += f" (@{username})"
+            bdt = int(claim.get("bdt", 0) or 0)
+            sequence = int(claim.get("sequence", i) or i)
+            text += (
+                f"**{i}. {name[:60]}**\n"
+                f"🆔 `{uid}` • 🎁 Bonus: **৳{bdt}** • 🏷️ Join #{sequence}\n\n"
+            )
+
+    buttons = []
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"admin_join_bonus_page_{page-1}"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"admin_join_bonus_page_{page+1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data=f"admin_join_bonus_page_{page}")])
+    buttons.append([InlineKeyboardButton("🔙 Users", callback_data="admin_users")])
+
+    await query.answer()
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown",
     )
 
@@ -3620,6 +3769,24 @@ async def admin_callback(
 
     if data in ("admin", "admin_panel"):
         await admin_panel(update, context)
+        return
+
+    if data.startswith("admin_users_page_"):
+        try:
+            page = int(data.rsplit("_", 1)[1])
+        except ValueError:
+            await query.answer("❌ Invalid page.", show_alert=True)
+            return
+        await admin_users_page(update, context, page)
+        return
+
+    if data.startswith("admin_join_bonus_page_"):
+        try:
+            page = int(data.rsplit("_", 1)[1])
+        except ValueError:
+            await query.answer("❌ Invalid page.", show_alert=True)
+            return
+        await admin_join_bonus_page(update, context, page)
         return
 
     routes = {

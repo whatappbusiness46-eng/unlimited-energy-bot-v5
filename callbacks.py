@@ -1341,8 +1341,7 @@ async def button_callback(
         for pos, member in enumerate(top_users, 1):
             icon = medals[pos-1] if pos <= 3 else f"{pos}."
             name = str(member.get("first_name") or member.get("last_name") or "Member").replace("*", "\\*").replace("_", "\\_").replace("`", "\\`")
-            score = int(member.get("campaign_score", 0) or 0)
-            lines.append(f"{icon} {name} — **{score}** score")
+            lines.append(f"{icon} {name}")
         lines += ["", "👑🎁 VIP Gift will be given according to campaign performance."]
         await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="home")]]), parse_mode="Markdown")
         return

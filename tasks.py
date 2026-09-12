@@ -569,23 +569,8 @@ async def _refresh_tasks_in_background(query, user_id: int):
             offerwall_tasks = _get_offerwall_tasks_cached(user_id)
             normal = [t for t in task_list if t.get("audience","normal") in {"normal","both"}]
             vip = [t for t in task_list if t.get("audience","normal") in {"vip","both"}]
-            lines = ["📋 **TASK CENTER**", "", f"📊 Daily Tasks: {count}/{limit}", ""]
-            if normal:
-                lines += ["🟢 **NORMAL TASKS**"]
-                for t in normal:
-                    lines.append(f"{'🟢' if task_available(user_id,t['id']) else '✅'} {_md(t.get('title',''))} — +{_safe_int(t.get('reward'),0)} Points")
-                lines.append("")
-            if _is_vip(user_id) and vip:
-                lines += ["💎 **VIP TASKS**"]
-                for t in vip:
-                    lines.append(f"{'🟢' if task_available(user_id,t['id']) else '✅'} {_md(t.get('title',''))} — +{_safe_int(t.get('reward'),0)} Points")
-            if offerwall_tasks:
-                lines += ["", "💎 **REWARD TASKS**"]
-                for t in offerwall_tasks[:OFFERWALLME_TASK_LIMIT]:
-                    reward = _offerwallme_reward_points(t.get("reward"), user_id)
-                    lines.append(f"🟢 {_md(t.get('title','Offerwall Task'))} — +{reward} Points")
-            lines += ["", "Complete each available task once. Rewards are permanent and cannot be claimed again.", "", "For click-only tasks, Telegram cannot prove that the URL was actually opened; the Claim button records one completion per user. Do not use click-only rewards for ad-provider links unless that provider explicitly permits incentivized traffic."]
-            await query.edit_message_text("\n".join(lines), reply_markup=tasks_menu(user_id, offerwall_tasks=offerwall_tasks), parse_mode="Markdown")
+            text = "🎯 **TASK CENTER**\n\nSelect a task category below."
+            await query.edit_message_text(text, reply_markup=tasks_menu(user_id, offerwall_tasks=offerwall_tasks), parse_mode="Markdown")
     except Exception:
         logger.exception("Background task refresh failed | user=%s", user_id)
     finally:
@@ -639,26 +624,7 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not task_list and not offerwall_tasks:
         text=("📋 **TASK CENTER**\n\n" + ("⏳ Loading latest tasks...\n\nPlease wait a moment; the task list is being refreshed." if not provider_cache_fresh("offerwallme_tasks", user.id) else "No tasks are available for your membership right now."))
     else:
-        lines=["📋 **TASK CENTER**", "", f"📊 Daily Tasks: {count}/{limit}", ""]
-        if normal:
-            lines += ["🟢 **NORMAL TASKS**"]
-            for t in normal:
-                lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {_md(t.get('title',''))} — +{_safe_int(t.get('reward'),0)} Points")
-            lines.append("")
-        if _is_vip(user.id) and vip:
-            lines += ["💎 **VIP TASKS**"]
-            for t in vip:
-                lines.append(f"{'🟢' if task_available(user.id,t['id']) else '✅'} {_md(t.get('title',''))} — +{_safe_int(t.get('reward'),0)} Points")
-        if offerwall_tasks:
-            lines += ["", "💎 **REWARD TASKS**"]
-            for t in offerwall_tasks[:OFFERWALLME_TASK_LIMIT]:
-                reward = _offerwallme_reward_points(t.get("reward"), user.id)
-                lines.append(f"🟢 {_md(t.get('title','Offerwall Task'))} — +{reward} Points")
-        lines.append("")
-        lines.append("Complete each available task once. Rewards are permanent and cannot be claimed again.")
-        lines.append("")
-        lines.append("For click-only tasks, Telegram cannot prove that the URL was actually opened; the Claim button records one completion per user. Do not use click-only rewards for ad-provider links unless that provider explicitly permits incentivized traffic.")
-        text="\n".join(lines)
+        text = "🎯 **TASK CENTER**\n\nSelect a task category below."
     markup = tasks_menu(user.id, offerwall_tasks=offerwall_tasks)
     if update.callback_query:
         try:
