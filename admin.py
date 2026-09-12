@@ -527,7 +527,7 @@ async def admin_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, p
         .limit(per_page)
     )
 
-    text = f"👥 **ALL USERS**\n📄 Page {page}/{total_pages} • Total: {total}\n\n"
+    text = f"👥 <b>ALL USERS</b>\n📄 Page {page}/{total_pages} • Total: {total}\n\n"
     if not user_list:
         text += "No users found."
     else:
@@ -536,11 +536,19 @@ async def admin_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, p
             first = str(user.get("first_name") or "").strip()
             last = str(user.get("last_name") or "").strip()
             username = str(user.get("username") or "").strip()
-            name = " ".join(x for x in (first, last) if x).strip() or username or "Unknown"
-            if username and username not in name:
+            # Support both current Telegram fields and older records.
+            name = (
+                " ".join(x for x in (first, last) if x).strip()
+                or str(user.get("name") or user.get("full_name") or user.get("display_name") or "").strip()
+                or (f"@{username}" if username else "")
+                or "Unknown"
+            )
+            if username and not name.startswith("@") and username not in name:
                 name += f" (@{username})"
+            safe_name = html.escape(name[:70])
+            safe_uid = html.escape(str(uid))
             score = int(user.get("campaign_score", 0) or 0)
-            text += f"**{i}. {name[:70]}**\n🆔 `{uid}` • 🏆 Score: **{score}**\n\n"
+            text += f"<b>{i}. {safe_name}</b>\n🆔 <code>{safe_uid}</code> • 🏆 Score: <b>{score}</b>\n\n"
 
     buttons = []
     nav = []
@@ -553,12 +561,21 @@ async def admin_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, p
     buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data=f"admin_users_page_{page}")])
     buttons.append([InlineKeyboardButton("🔙 Users", callback_data="admin_users")])
 
-    await query.answer()
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode="Markdown",
-    )
+    try:
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        if "message is not modified" in str(exc).lower():
+            logger.info("All users page unchanged: %s", exc)
+            return
+        logger.exception("All users page render failed")
+        try:
+            await query.answer("⚠️ Could not load users.", show_alert=True)
+        except Exception:
+            pass
 
 
 # ==================================================

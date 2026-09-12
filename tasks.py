@@ -585,13 +585,11 @@ def tasks_menu(user_id=None, offerwall_tasks=None, offerwall_category=None):
         available = task_available(user_id, task["id"]) if user_id else True
         buttons.append([InlineKeyboardButton(f"{'🎯' if available else '✅'} {_md(task.get('title',''))} (+{_safe_int(task.get('reward'),0)})", callback_data=f"task_{task['id']}")])
     if user_id:
-        try:
-            if offerwall_tasks is None:
-                offerwall_tasks = _get_offerwall_tasks_cached(user_id)
-            # CPAlead BD offers are shown under one clean member-facing category.
-            buttons.append([InlineKeyboardButton("🇧🇩 BD Advance Tasks", callback_data="cpalead_tasks")])
-        except Exception:
-            logger.exception("Offerwall.me task category menu failed | user=%s", user_id)
+        # Keep the provider areas separate and clean:
+        # BD Advance Tasks = CPAlead BD offers
+        # Rewards Tasks = Offerwall.me categories (the old task buttons).
+        buttons.append([InlineKeyboardButton("🇧🇩 BD Advance Tasks", callback_data="cpalead_tasks")])
+        buttons.append([InlineKeyboardButton("🎁 Rewards Tasks", callback_data="reward_tasks")])
     buttons.append([InlineKeyboardButton("🏠 Home", callback_data="home")])
     return InlineKeyboardMarkup(buttons)
 
@@ -685,6 +683,46 @@ async def cpalead_tasks_callback(update, context):
         lines.append("😔 No BD tasks are available right now.")
     buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
     await q.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+
+async def rewards_tasks_callback(update, context):
+    """Show Offerwall.me tasks using the previous category-button layout."""
+    q = update.callback_query
+    if not q or q.data != "reward_tasks":
+        return
+    await q.answer()
+    user_id = int(q.from_user.id)
+
+    tasks = _get_offerwall_tasks_cached(user_id)
+    if not tasks or not provider_cache_fresh("offerwallme_tasks", user_id):
+        try:
+            fresh = await asyncio.to_thread(refresh_offerwallme_tasks, user_id)
+            if fresh is not None:
+                tasks = list(fresh or [])
+            else:
+                tasks = _get_offerwall_tasks_cached(user_id)
+        except Exception:
+            logger.exception("Offerwall.me Rewards Tasks refresh failed | user=%s", user_id)
+            tasks = _get_offerwall_tasks_cached(user_id)
+
+    category_order = ["easy", "app", "video", "survey", "other"]
+    buttons = []
+    for category in category_order:
+        category_tasks = [t for t in tasks if _offerwall_task_category(t) == category]
+        label = _offerwall_task_category_label(category)
+        buttons.append([InlineKeyboardButton(
+            f"{label} ({len(category_tasks)})" if category_tasks else label,
+            callback_data=f"owcat_{category}",
+        )])
+
+    text = (
+        "🎁 **REWARDS TASKS**\n\n"
+        "Choose a task type below.\n"
+        "Rewards are credited after verified Offerwall.me conversion.\n\n"
+        f"📋 Available Offers: {len(tasks)}"
+    )
+    buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 
 async def cpalead_task_callback(update, context):
@@ -830,5 +868,5 @@ async def offerwallme_proof_message_handler(update, context):
     return False
 
 
-HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback,"cpalead_tasks_callback":cpalead_tasks_callback,"cpalead_task_callback":cpalead_task_callback,"offerwallme_category_callback":offerwallme_category_callback,"offerwallme_task_callback":offerwallme_task_callback,"offerwallme_task_proof_callback":offerwallme_task_proof_callback}
-__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","cpalead_tasks_callback","cpalead_task_callback","offerwallme_category_callback","offerwallme_task_callback","offerwallme_task_proof_callback","offerwallme_proof_message_handler","HANDLER_FUNCTIONS","ensure_task_indexes"]
+HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback,"rewards_tasks_callback":rewards_tasks_callback,"cpalead_tasks_callback":cpalead_tasks_callback,"cpalead_task_callback":cpalead_task_callback,"offerwallme_category_callback":offerwallme_category_callback,"offerwallme_task_callback":offerwallme_task_callback,"offerwallme_task_proof_callback":offerwallme_task_proof_callback}
+__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","rewards_tasks_callback","cpalead_tasks_callback","cpalead_task_callback","offerwallme_category_callback","offerwallme_task_callback","offerwallme_task_proof_callback","offerwallme_proof_message_handler","HANDLER_FUNCTIONS","ensure_task_indexes"]
