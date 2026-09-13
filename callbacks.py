@@ -73,7 +73,7 @@ from offers import (
     offers_page,
     offer_callback,
     offer_claim_callback,
-    provider_offer_callback,
+    provider_offer_callback, admin_test_offer_callback,
 )
 
 from earn import (
@@ -87,7 +87,7 @@ from earn import (
     claim_test_task,
 )
 
-from tasks import tasks_page as task_menu_page, task_callback, task_complete_callback, rewards_tasks_callback, cpalead_tasks_callback, cpalead_task_callback, offerwallme_category_callback, offerwallme_task_callback, offerwallme_task_proof_callback
+from tasks import tasks_page as task_menu_page, task_callback, task_complete_callback, rewards_tasks_callback, cpalead_tasks_callback, cpalead_task_callback, offerwallme_category_callback, offerwallme_task_callback, offerwallme_task_proof_callback, admin_test_cpalead_callback, admin_test_offerwallme_callback
 
 from payments import method_keyboard, payment_instructions, create_payment, submit_reference, get_payment
 from config import PREMIUM_CASH_PRICE, VIP1_CASH_PRICE, VIP2_CASH_PRICE, VIP3_CASH_PRICE, VIP4_CASH_PRICE, VIP5_CASH_PRICE
@@ -1384,6 +1384,9 @@ async def button_callback(
 
     if data.startswith("bdtask_"):
         await bd_task_callback(update, context); return
+    if data.startswith("admtest_offer_"):
+        await admin_test_offer_callback(update, context)
+        return
     if data.startswith("provider_offer_"):
         await provider_offer_callback(update, context)
         return
@@ -1489,6 +1492,9 @@ async def button_callback(
         await cpalead_tasks_callback(update, context)
         return
 
+    if data.startswith("admtest_cpa_"):
+        await admin_test_cpalead_callback(update, context)
+        return
     if data.startswith("cpalead_"):
         await cpalead_task_callback(update, context)
         return
@@ -1497,6 +1503,9 @@ async def button_callback(
         await offerwallme_category_callback(update, context)
         return
 
+    if data.startswith("admtest_ow_"):
+        await admin_test_offerwallme_callback(update, context)
+        return
     if data.startswith("owtask_proof_"):
         await offerwallme_task_proof_callback(update, context)
         return

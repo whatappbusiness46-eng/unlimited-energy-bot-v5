@@ -23,7 +23,7 @@ from provider_integrations import (
     create_offerwall_task_proof, get_offerwall_task_submission, mark_offerwall_task_submission,
     get_cpa_lead_bd_offers, get_cached_cpa_lead_bd_offers, refresh_cpa_lead_bd_offers,
     _cpa_lead_member_reward_points, _cpa_lead_offer_url, _record_provider_pending, _provider_task_hidden,
-    _offerwallme_task_tracking_url,
+    _offerwallme_task_tracking_url, admin_test_provider_completion,
 )
 
 logger = logging.getLogger(__name__)
@@ -765,6 +765,8 @@ async def cpalead_task_callback(update, context):
     buttons = []
     if url:
         buttons.append([InlineKeyboardButton("🚀 Open Task", url=url)])
+    if int(q.from_user.id) == int(ADMIN_ID):
+        buttons.append([InlineKeyboardButton("🧪 Admin Test Complete", callback_data=f"admtest_cpa_{offer_id}")])
     buttons.append([InlineKeyboardButton("⬅️ BD Advance Tasks", callback_data="cpalead_tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
@@ -874,10 +876,63 @@ async def offerwallme_task_callback(update, context):
     task_url = _offerwallme_task_tracking_url(str(task.get("url") or task.get("link") or "").strip(), q.from_user.id)
     if task_url and submission_status != "rewarded":
         buttons.append([InlineKeyboardButton("🚀 Open Task", url=task_url)])
+    if int(q.from_user.id) == int(ADMIN_ID) and submission_status != "rewarded":
+        buttons.append([InlineKeyboardButton("🧪 Admin Test Complete", callback_data=f"admtest_ow_{task_id}")])
     if submission_status == "rewarded":
         text = text.replace("⏳ **Status:** In Progress — complete the task. Points will be added automatically after provider verification.", "✅ **Status:** Verified & Rewarded — Points have been added.")
     buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+
+async def admin_test_cpalead_callback(update, context):
+    q = update.callback_query
+    if not q or not str(q.data).startswith("admtest_cpa_"):
+        return
+    await q.answer()
+    if int(q.from_user.id) != int(ADMIN_ID):
+        await q.edit_message_text("⛔ Admin only.")
+        return
+    offer_id = str(q.data)[len("admtest_cpa_"):]
+    offers = list(get_cached_cpa_lead_bd_offers(q.from_user.id) or [])
+    offer = next((x for x in offers if str(x.get("offer_id")) == offer_id), None)
+    if not offer:
+        await q.edit_message_text("⚠️ Offer not found.")
+        return
+    points = _cpa_lead_member_reward_points(offer.get("provider_reward", 0), q.from_user.id)
+    result = admin_test_provider_completion("cpalead", q.from_user.id, offer_id, points, str(offer.get("title") or "CPAlead Test"))
+    if result.get("ok"):
+        await q.edit_message_text(f"🧪 **CPAlead ADMIN TEST**\\n\\n✅ Completed & credited\\n💰 +{points} Points\\n\\nThis test is available only to Admin ID.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD Advance Tasks", callback_data="cpalead_tasks")],[InlineKeyboardButton("🏠 Home", callback_data="home")]]))
+    else:
+        msg = "Already tested this offer." if result.get("error") == "already_tested" else f"Test failed: {result.get('error','unknown')}"
+        await q.edit_message_text(f"⚠️ {msg}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD Advance Tasks", callback_data="cpalead_tasks")]]))
+
+
+async def admin_test_offerwallme_callback(update, context):
+    q = update.callback_query
+    if not q or not str(q.data).startswith("admtest_ow_"):
+        return
+    await q.answer()
+    if int(q.from_user.id) != int(ADMIN_ID):
+        await q.edit_message_text("⛔ Admin only.")
+        return
+    task_id = str(q.data)[len("admtest_ow_"):]
+    tasks = _get_offerwall_tasks_cached(q.from_user.id)
+    task = next((t for t in tasks if str(t.get("id")) == task_id), None)
+    if not task:
+        await q.edit_message_text("⚠️ Task not found.")
+        return
+    reward_raw = task.get("reward", task.get("payout", task.get("amount", 0)))
+    points = _offerwallme_reward_points(reward_raw, q.from_user.id)
+    result = admin_test_provider_completion("offerwallme", q.from_user.id, task_id, points, str(task.get("title") or "Offerwall.me Test"))
+    if result.get("ok"):
+        try:
+            mark_offerwall_task_submission(q.from_user.id, task_id, "rewarded", submitted_at=int(time.time()), provider_reward_raw=str(reward_raw), task_title=str(task.get("title") or "")[:200], proof_kind="admin_test", proof_text="admin")
+        except Exception:
+            logger.exception("Could not mark Offerwall.me admin test submission")
+        await q.edit_message_text(f"🧪 **Offerwall.me ADMIN TEST**\\n\\n✅ Completed & credited\\n💰 +{points} Points\\n\\nThis test is available only to Admin ID.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Rewards Tasks", callback_data="reward_tasks")],[InlineKeyboardButton("🏠 Home", callback_data="home")]]))
+    else:
+        msg = "Already tested this task." if result.get("error") == "already_tested" else f"Test failed: {result.get('error','unknown')}"
+        await q.edit_message_text(f"⚠️ {msg}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Rewards Tasks", callback_data="reward_tasks")]]))
 
 
 async def offerwallme_task_proof_callback(update, context):
@@ -891,5 +946,5 @@ async def offerwallme_proof_message_handler(update, context):
     return False
 
 
-HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback,"rewards_tasks_callback":rewards_tasks_callback,"cpalead_tasks_callback":cpalead_tasks_callback,"cpalead_task_callback":cpalead_task_callback,"offerwallme_category_callback":offerwallme_category_callback,"offerwallme_task_callback":offerwallme_task_callback,"offerwallme_task_proof_callback":offerwallme_task_proof_callback}
-__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","rewards_tasks_callback","cpalead_tasks_callback","cpalead_task_callback","offerwallme_category_callback","offerwallme_task_callback","offerwallme_task_proof_callback","offerwallme_proof_message_handler","HANDLER_FUNCTIONS","ensure_task_indexes"]
+HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback,"rewards_tasks_callback":rewards_tasks_callback,"cpalead_tasks_callback":cpalead_tasks_callback,"cpalead_task_callback":cpalead_task_callback,"offerwallme_category_callback":offerwallme_category_callback,"offerwallme_task_callback":offerwallme_task_callback,"offerwallme_task_proof_callback":offerwallme_task_proof_callback,"admin_test_cpalead_callback":admin_test_cpalead_callback,"admin_test_offerwallme_callback":admin_test_offerwallme_callback}
+__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","rewards_tasks_callback","cpalead_tasks_callback","cpalead_task_callback","offerwallme_category_callback","offerwallme_task_callback","offerwallme_task_proof_callback","admin_test_cpalead_callback","admin_test_offerwallme_callback","offerwallme_proof_message_handler","HANDLER_FUNCTIONS","ensure_task_indexes"]

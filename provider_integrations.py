@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from database import db, add_balance, add_activity, get_user, record_transaction, remove_balance, get_membership_multiplier
+from config import ADMIN_ID
 
 logger = logging.getLogger(__name__)
 
@@ -407,11 +408,14 @@ def sync_offerwallme_offers(user_id: int) -> int:
 
 
 def _offerwallme_task_tracking_url(task_url: str, user_id: int) -> str:
-    """Ensure an Offerwall.me task carries the Telegram user's subId.
+    """Prepare an Offerwall.me task URL without breaking provider deep-links.
 
-    Offerwall.me postbacks identify the user with ``subId``. Some task API
-    responses already contain a tracking placeholder or query parameter;
-    preserve the provider URL while filling/adding the user identifier.
+    The task API already receives the member ID via ``id``. Some returned task
+    URLs are third-party deep-links (for example Telegram Mini App URLs).
+    Appending an unrelated ``subId`` parameter to those links can change or
+    break the provider's own start/deep-link tracking. Only fill an explicit
+    user-ID placeholder or an existing ``subid`` field. For a first-party
+    Offerwall.me URL, add ``subId`` when the provider did not supply one.
     """
     url = str(task_url or "").strip()
     if not url:
@@ -433,9 +437,16 @@ def _offerwallme_task_tracking_url(task_url: str, user_id: int) -> str:
                     found = True
                 continue
             rebuilt.append((key, value))
-        if not found:
+        if found:
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(rebuilt), parts.fragment))
+
+        host = parts.netloc.lower().split(":", 1)[0]
+        if host == "offerwall.me" or host.endswith(".offerwall.me"):
             rebuilt.append(("subId", uid))
-        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(rebuilt), parts.fragment))
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(rebuilt), parts.fragment))
+
+        # Third-party/deep-link URL: keep it exactly as returned by the provider.
+        return url
     except Exception:
         return url
 
@@ -1260,6 +1271,38 @@ def process_postback(provider: str, params: Dict[str, Any]):
 
 
 
+
+
+
+def admin_test_provider_completion(provider: str, user_id: int, offer_id: str, points: int, title: str = ""):
+    """Credit a provider task/offer only for the configured Admin ID as a safe test path."""
+    if int(user_id) != int(ADMIN_ID):
+        return {"ok": False, "error": "admin_only"}
+    provider = str(provider or "").strip().lower()
+    offer_id = str(offer_id or "").strip()
+    points = int(points or 0)
+    if provider not in {"cpalead", "cpagrip", "offerwallme"}:
+        return {"ok": False, "error": "invalid_provider"}
+    if not offer_id or points <= 0:
+        return {"ok": False, "error": "invalid_offer_or_points"}
+    event_id = f"admin_test:{provider}:{int(user_id)}:{offer_id}"
+    try:
+        provider_events.insert_one({"provider": provider, "event_id": event_id, "user_id": int(user_id), "offer_id": offer_id, "offer_title": str(title or offer_id)[:200], "provider_reward": 0, "reward_raw": "admin_test", "points": points, "status": "admin_test", "received_at": int(time.time())})
+    except Exception as exc:
+        if "duplicate" in str(exc).lower() or "e11000" in str(exc).lower():
+            return {"ok": False, "error": "already_tested"}
+        logger.exception("Admin provider test event insert failed")
+        return {"ok": False, "error": "event_store_failed"}
+    if not add_balance(int(user_id), points):
+        provider_events.delete_one({"provider": provider, "event_id": event_id})
+        return {"ok": False, "error": "credit_failed"}
+    try:
+        record_transaction(int(user_id), f"{provider}_admin_test", points, event_id, metadata={"provider": provider, "offer_id": offer_id, "admin_test": "true"})
+        add_activity(int(user_id), f"🧪 {provider.upper()} admin test", points)
+    except Exception:
+        logger.exception("Admin provider test transaction/activity failed | provider=%s", provider)
+    _mark_provider_pending_rewarded(provider, int(user_id), event_id, points, offer_id)
+    return {"ok": True, "message": "admin_test_credited", "provider": provider, "offer_id": offer_id, "points": points}
 
 def get_cached_provider_offers(user_id: int):
     return _cache_get_stale(("cpagrip_offers", int(user_id)))

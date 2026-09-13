@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 import time
-from config import CPAGRIP_DEFAULT_USER_REWARD_POINTS, CPAGRIP_OFFER_LIMIT
+from config import CPAGRIP_DEFAULT_USER_REWARD_POINTS, CPAGRIP_OFFER_LIMIT, ADMIN_ID
 from html import escape as html_escape
 from typing import Any, Dict, Optional
 
@@ -18,7 +18,7 @@ from telegram.ext import ContextTypes
 from database import get_user
 from provider_integrations import (
     get_provider_offers, get_cached_provider_offers, provider_cache_fresh,
-    refresh_provider_offers, _reward_points, _record_provider_pending, _provider_task_hidden,
+    refresh_provider_offers, _reward_points, _record_provider_pending, _provider_task_hidden, admin_test_provider_completion,
 )
 
 logger = logging.getLogger(__name__)
@@ -305,11 +305,42 @@ async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_
         "\n".join(detail_lines),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🚀 Start Offer", url=url)],
+            *([[InlineKeyboardButton("🧪 Admin Test Complete", callback_data=f"admtest_offer_{provider}_{offer_id}")]] if int(query.from_user.id) == int(ADMIN_ID) else []),
             [InlineKeyboardButton("⬅️ Offers", callback_data="offers")],
             [InlineKeyboardButton("🏠 Home", callback_data="home")],
         ]),
         parse_mode="HTML",
     )
+
+
+async def admin_test_offer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not str(query.data).startswith("admtest_offer_"):
+        return
+    await query.answer()
+    if int(query.from_user.id) != int(ADMIN_ID):
+        await query.edit_message_text("⛔ Admin only.")
+        return
+    raw = str(query.data)[len("admtest_offer_"):]
+    if "_" not in raw:
+        await query.edit_message_text("⚠️ Invalid test offer.")
+        return
+    provider, offer_id = raw.split("_", 1)
+    if provider not in {"cpagrip", "cpalead", "offerwallme"}:
+        await query.edit_message_text("⚠️ Invalid provider.")
+        return
+    items = _cached_live_offers(query.from_user.id)
+    offer = next((x for x in items if str(x.get("provider")) == provider and str(x.get("offer_id")) == offer_id), None)
+    if not offer:
+        await query.edit_message_text("⚠️ Offer not found.")
+        return
+    points = _member_reward(offer) or 200
+    result = admin_test_provider_completion(provider, query.from_user.id, offer_id, points, str(offer.get("custom_title") or offer.get("title") or "Offer"))
+    if result.get("ok"):
+        await query.edit_message_text(f"🧪 **{provider.upper()} ADMIN TEST**\\n\\n✅ Completed & credited\\n💰 +{points} Points\\n\\nThis test is available only to Admin ID.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Offers", callback_data="offers")],[InlineKeyboardButton("🏠 Home", callback_data="home")]]))
+    else:
+        msg = "Already tested this offer." if result.get("error") == "already_tested" else f"Test failed: {result.get('error','unknown')}"
+        await query.edit_message_text(f"⚠️ {msg}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Offers", callback_data="offers")]]))
 
 
 # Legacy callbacks are retained but can never self-credit a user.
@@ -331,6 +362,7 @@ async def offer_claim_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 HANDLER_FUNCTIONS = {
     "offers": offers_page,
     "provider_offer_callback": provider_offer_callback,
+    "admin_test_offer_callback": admin_test_offer_callback,
     "offer_callback": offer_callback,
     "offer_claim_callback": offer_claim_callback,
 }
@@ -343,6 +375,7 @@ __all__ = [
     "offers_menu",
     "offers_page",
     "provider_offer_callback",
+    "admin_test_offer_callback",
     "offer_callback",
     "offer_claim_callback",
     "HANDLER_FUNCTIONS",
