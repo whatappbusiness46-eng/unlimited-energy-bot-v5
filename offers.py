@@ -18,7 +18,7 @@ from telegram.ext import ContextTypes
 from database import get_user
 from provider_integrations import (
     get_provider_offers, get_cached_provider_offers, provider_cache_fresh,
-    refresh_provider_offers, _reward_points, _record_provider_pending,
+    refresh_provider_offers, _reward_points, _record_provider_pending, _provider_task_hidden,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,7 +100,11 @@ def _live_offers(user_id: int) -> list:
 
 def _cached_live_offers(user_id: int) -> list:
     try:
-        return list(get_cached_provider_offers(user_id) or [])
+        items = list(get_cached_provider_offers(user_id) or [])
+        return [
+            item for item in items
+            if not _provider_task_hidden(str(item.get("provider") or "cpagrip"), user_id, str(item.get("offer_id") or ""))
+        ]
     except Exception:
         return []
 
@@ -265,6 +269,13 @@ async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("⚠️ Offer link unavailable.")
         return
 
+    if _provider_task_hidden(provider, query.from_user.id, offer_id):
+        await query.edit_message_text(
+            "ℹ️ This offer has already been started or completed and is no longer available.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Offers", callback_data="offers")]])
+        )
+        return
+
     title = html_escape(str(offer.get("custom_title") or offer.get("title") or "Offer"))
     description = html_escape(str(offer.get("description") or "")).strip()
     reward_points = _member_reward(offer) or 200
@@ -287,7 +298,7 @@ async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_
     detail_lines += [
         "",
         "Complete the offer according to its instructions. "
-        "⏳ Status: Pending — waiting for provider verification. "
+        "⏳ Status: In Progress — complete the offer. "
         "Your Points will be added automatically after a verified conversion callback.",
     ]
     await query.edit_message_text(

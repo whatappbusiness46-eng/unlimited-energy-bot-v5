@@ -22,7 +22,8 @@ from provider_integrations import (
     refresh_offerwallme_tasks, submit_offerwallme_task_proof, _offerwallme_reward_points,
     create_offerwall_task_proof, get_offerwall_task_submission, mark_offerwall_task_submission,
     get_cpa_lead_bd_offers, get_cached_cpa_lead_bd_offers, refresh_cpa_lead_bd_offers,
-    _cpa_lead_member_reward_points, _cpa_lead_offer_url, _record_provider_pending,
+    _cpa_lead_member_reward_points, _cpa_lead_offer_url, _record_provider_pending, _provider_task_hidden,
+    _offerwallme_task_tracking_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -542,7 +543,11 @@ def _offerwall_task_category_label(category):
 
 def _offerwall_category_tasks(user_id, category):
     tasks = _get_offerwall_tasks_cached(user_id)
-    return [t for t in tasks if _offerwall_task_category(t) == category]
+    return [
+        t for t in tasks
+        if _offerwall_task_category(t) == category
+        and not _provider_task_hidden("offerwallme", user_id, str(t.get("id") or ""))
+    ]
 
 
 def _get_offerwall_tasks_cached(user_id):
@@ -674,7 +679,7 @@ async def cpalead_tasks_callback(update, context):
     buttons = []
     for offer in offers[:20]:
         oid = str(offer.get("offer_id") or "").strip()
-        if not oid:
+        if not oid or _provider_task_hidden("cpalead", user_id, oid):
             continue
         reward = _cpa_lead_member_reward_points(offer.get("provider_reward", 0), user_id)
         title = str(offer.get("title") or "BD Task").strip()
@@ -742,6 +747,12 @@ async def cpalead_task_callback(update, context):
     if not offer:
         await q.edit_message_text("⚠️ This BD task is no longer available.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD Advance Tasks", callback_data="cpalead_tasks")]]))
         return
+    if _provider_task_hidden("cpalead", q.from_user.id, offer_id):
+        await q.edit_message_text(
+            "ℹ️ This task has already been started or completed and is no longer available.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD Advance Tasks", callback_data="cpalead_tasks")]])
+        )
+        return
     reward = _cpa_lead_member_reward_points(offer.get("provider_reward", 0), q.from_user.id)
     title = str(offer.get("title") or "BD Task")
     description = str(offer.get("description") or "").replace("\n", "\n").strip()
@@ -750,7 +761,7 @@ async def cpalead_task_callback(update, context):
     text = f"🎯 **{_md(title)}**\n\n"
     if description:
         text += f"{_md(description)}\n\n"
-    text += f"💰 Reward: +{reward} Points\n🇧🇩 Type: BD Advance Task\n\n⏳ Status: Pending — complete the task. Points will be added automatically after provider verification."
+    text += f"💰 Reward: +{reward} Points\n🇧🇩 Type: BD Advance Task\n\n⏳ Status: In Progress — complete the task. Points will be added automatically after provider verification."
     buttons = []
     if url:
         buttons.append([InlineKeyboardButton("🚀 Open Task", url=url)])
@@ -803,8 +814,15 @@ async def offerwallme_task_callback(update, context):
         await q.edit_message_text("⚠️ This reward task is no longer available.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks", callback_data="tasks")]]))
         return
 
-    # No screenshot/proof step: opening a provider task creates one pending
-    # conversion slot. The actual reward is credited only when Offerwall.me
+    if _provider_task_hidden("offerwallme", q.from_user.id, task_id):
+        await q.edit_message_text(
+            "ℹ️ This task has already been started or completed and is no longer available.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks", callback_data="tasks")]])
+        )
+        return
+
+    # No screenshot/proof step: opening a provider task creates one conversion
+    # slot. The actual reward is credited only when Offerwall.me
     # sends a verified postback for this user. Keep only the latest pending
     # task to avoid ambiguous conversion matching.
     try:
@@ -850,14 +868,14 @@ async def offerwallme_task_callback(update, context):
     text += f"💰 Reward: +{reward} Points\n🏷 Type: {_md(category_label)}"
     if platform:
         text += f"\n📱 Platform: {_md(platform)}"
-    text += "\n\n⏳ **Status:** Pending — complete the task. Your Points will be added automatically after provider verification."
+    text += "\n\n⏳ **Status:** In Progress — complete the task. Points will be added automatically after provider verification."
 
     buttons = []
-    task_url = str(task.get("url") or task.get("link") or "").strip()
-    if task_url:
+    task_url = _offerwallme_task_tracking_url(str(task.get("url") or task.get("link") or "").strip(), q.from_user.id)
+    if task_url and submission_status != "rewarded":
         buttons.append([InlineKeyboardButton("🚀 Open Task", url=task_url)])
     if submission_status == "rewarded":
-        text = text.replace("⏳ **Status:** Pending — complete the task. Your Points will be added automatically after provider verification.", "✅ **Status:** Verified & Rewarded — Points have been added.")
+        text = text.replace("⏳ **Status:** In Progress — complete the task. Points will be added automatically after provider verification.", "✅ **Status:** Verified & Rewarded — Points have been added.")
     buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 

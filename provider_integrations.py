@@ -196,6 +196,25 @@ def _mark_offerwall_submission_from_postback(user_id: int, reward_raw: Any, even
     return str(target.get("task_id"))
 
 
+def _provider_task_hidden(provider: str, user_id: int, offer_id: str) -> bool:
+    """Return True once a provider task has been started or verified for this user.
+
+    Provider tasks are one-time from the member UI: after the first tap they are
+    removed from the task list, and after verification they stay removed.
+    """
+    try:
+        doc = provider_pending.find_one({
+            "provider": str(provider),
+            "user_id": int(user_id),
+            "offer_id": str(offer_id or ""),
+            "status": {"$in": ["started", "pending", "rewarded"]},
+        }, {"_id": 1})
+        return bool(doc)
+    except Exception:
+        logger.exception("Provider task hidden check failed | provider=%s user=%s offer=%s", provider, user_id, offer_id)
+        return False
+
+
 def _record_provider_pending(provider: str, user_id: int, offer_id: str = "", title: str = "", reward_points: int = 0, reward_raw: Any = ""):
     """Record that a member has started a provider task and is awaiting S2S verification."""
     try:
@@ -205,7 +224,7 @@ def _record_provider_pending(provider: str, user_id: int, offer_id: str = "", ti
             {"$set": {
                 "provider": str(provider), "user_id": int(user_id), "offer_id": str(offer_id or ""),
                 "title": str(title or "")[:200], "reward_points": int(reward_points or 0),
-                "reward_raw": str(reward_raw), "status": "pending", "updated_at": now,
+                "reward_raw": str(reward_raw), "status": "started", "updated_at": now,
             }, "$setOnInsert": {"created_at": now}},
             upsert=True,
         )
@@ -216,7 +235,7 @@ def _record_provider_pending(provider: str, user_id: int, offer_id: str = "", ti
 def _mark_provider_pending_rewarded(provider: str, user_id: int, event_id: str, points: int, offer_id: str = ""):
     """Mark the matching pending provider task as verified/rewarded."""
     try:
-        q = {"provider": str(provider), "user_id": int(user_id), "status": "pending"}
+        q = {"provider": str(provider), "user_id": int(user_id), "status": {"$in": ["started", "pending"]}}
         if offer_id:
             q["offer_id"] = str(offer_id)
         result = provider_pending.update_one(
@@ -386,6 +405,40 @@ def sync_offerwallme_offers(user_id: int) -> int:
     return len(offers)
 
 
+
+def _offerwallme_task_tracking_url(task_url: str, user_id: int) -> str:
+    """Ensure an Offerwall.me task carries the Telegram user's subId.
+
+    Offerwall.me postbacks identify the user with ``subId``. Some task API
+    responses already contain a tracking placeholder or query parameter;
+    preserve the provider URL while filling/adding the user identifier.
+    """
+    url = str(task_url or "").strip()
+    if not url:
+        return url
+    uid = str(int(user_id))
+    for token in ("{subId}", "{subid}", "{user_id}", "{uid}", "%%SUBID%%", "%%USER_ID%%"):
+        url = url.replace(token, uid)
+    try:
+        parts = urlsplit(url)
+        if not parts.scheme or not parts.netloc:
+            return url
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        found = False
+        rebuilt = []
+        for key, value in query:
+            if key.lower() == "subid":
+                if not found:
+                    rebuilt.append((key, uid))
+                    found = True
+                continue
+            rebuilt.append((key, value))
+        if not found:
+            rebuilt.append(("subId", uid))
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(rebuilt), parts.fragment))
+    except Exception:
+        return url
+
 def get_offerwallme_tasks(user_id: int, force_refresh: bool = False):
     if not _enabled("offerwallme"):
         return []
@@ -432,7 +485,7 @@ def get_offerwallme_tasks(user_id: int, force_refresh: bool = False):
                 proof_text=str(_first(raw, ("proof_text", "proofText", "proof_instruction", "proofInstruction"), "Submit the required proof") or "Submit the required proof"),
                 id=str(task_id),
                 reward=reward,
-                url=str(task_url or ""),
+                url=_offerwallme_task_tracking_url(task_url, user_id),
                 offer_type=offer_type,
                 platform=platform,
             )
