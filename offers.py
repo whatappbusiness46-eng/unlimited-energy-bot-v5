@@ -18,7 +18,7 @@ from telegram.ext import ContextTypes
 from database import get_user
 from provider_integrations import (
     get_provider_offers, get_cached_provider_offers, provider_cache_fresh,
-    refresh_provider_offers, _reward_points,
+    refresh_provider_offers, _reward_points, _record_provider_pending,
 )
 
 logger = logging.getLogger(__name__)
@@ -270,6 +270,11 @@ async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_
     reward_points = _member_reward(offer) or 200
     if reward_points <= 0:
         reward_points = 200
+    _record_provider_pending(
+        provider, query.from_user.id, offer_id,
+        str(offer.get("custom_title") or offer.get("title") or "Offer"),
+        reward_points, offer.get("provider_reward", 0)
+    )
     # Provider payout is intentionally hidden from members. Member-facing reward is fixed/configured.
     detail_lines = [
         "🎁 <b>OFFER DETAILS</b>",
@@ -282,7 +287,8 @@ async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_
     detail_lines += [
         "",
         "Complete the offer according to its instructions. "
-        "The bot will credit your points only after a verified conversion callback from the provider.",
+        "⏳ Status: Pending — waiting for provider verification. "
+        "Your Points will be added automatically after a verified conversion callback.",
     ]
     await query.edit_message_text(
         "\n".join(detail_lines),

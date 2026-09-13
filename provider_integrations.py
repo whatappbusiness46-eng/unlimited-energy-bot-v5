@@ -57,6 +57,7 @@ provider_offers = db["provider_offers"]
 provider_events = db["provider_events"]
 provider_disabled_offers = db["provider_disabled_offers"]
 offerwall_task_proofs = db["offerwall_task_proofs"]
+provider_pending = db["provider_pending"]
 
 try:
     provider_offers.create_index([("provider", 1), ("offer_id", 1)],
@@ -67,6 +68,8 @@ try:
                                           unique=True, name="provider_disabled_offer_unique")
     offerwall_task_proofs.create_index([("proof_id", 1)], unique=True, name="offerwall_task_proof_unique")
     offerwall_task_proofs.create_index([("user_id", 1), ("task_id", 1), ("created_at", -1)], name="offerwall_task_proof_user_task")
+    provider_pending.create_index([("provider", 1), ("user_id", 1), ("offer_id", 1)], name="provider_pending_lookup")
+    provider_pending.create_index([("provider", 1), ("user_id", 1), ("created_at", -1)], name="provider_pending_user_time")
     db["offerwall_task_submissions"].create_index([("user_id", 1), ("task_id", 1)], unique=True, name="offerwall_task_submission_unique")
     db["offerwall_task_submissions"].create_index([("user_id", 1), ("status", 1), ("submitted_at", -1)], name="offerwall_task_submission_status")
 except Exception:
@@ -191,6 +194,63 @@ def _mark_offerwall_submission_from_postback(user_id: int, reward_raw: Any, even
         {"$set": {"status": "rewarded", "provider_event_id": str(event_id), "reward_points": int(points), "approved_at": int(time.time())}},
     )
     return str(target.get("task_id"))
+
+
+def _record_provider_pending(provider: str, user_id: int, offer_id: str = "", title: str = "", reward_points: int = 0, reward_raw: Any = ""):
+    """Record that a member has started a provider task and is awaiting S2S verification."""
+    try:
+        now = int(time.time())
+        provider_pending.update_one(
+            {"provider": str(provider), "user_id": int(user_id), "offer_id": str(offer_id or "")},
+            {"$set": {
+                "provider": str(provider), "user_id": int(user_id), "offer_id": str(offer_id or ""),
+                "title": str(title or "")[:200], "reward_points": int(reward_points or 0),
+                "reward_raw": str(reward_raw), "status": "pending", "updated_at": now,
+            }, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+        )
+    except Exception:
+        logger.exception("Provider pending record failed | provider=%s user=%s offer=%s", provider, user_id, offer_id)
+
+
+def _mark_provider_pending_rewarded(provider: str, user_id: int, event_id: str, points: int, offer_id: str = ""):
+    """Mark the matching pending provider task as verified/rewarded."""
+    try:
+        q = {"provider": str(provider), "user_id": int(user_id), "status": "pending"}
+        if offer_id:
+            q["offer_id"] = str(offer_id)
+        result = provider_pending.update_one(
+            q, {"$set": {"status": "rewarded", "provider_event_id": str(event_id), "credited_points": int(points), "verified_at": int(time.time())}}
+        )
+        return bool(result.modified_count)
+    except Exception:
+        logger.exception("Provider pending reward update failed | provider=%s user=%s", provider, user_id)
+        return False
+
+
+def _notify_user_verified(user_id: int, provider: str, points: int, title: str = ""):
+    """Send a verified-reward notification using the configured BOT_TOKEN only."""
+    token = _env("BOT_TOKEN")
+    if not token:
+        logger.warning("BOT_TOKEN unavailable for reward notification | user=%s", user_id)
+        return False
+    provider_label = {"cpalead": "CPAlead", "cpagrip": "CPAGrip", "offerwallme": "Offerwall.me"}.get(str(provider), str(provider))
+    safe_title = str(title or "Task").replace("<", "&lt;").replace(">", "&gt;")[:120]
+    text = (
+        "🎉 <b>Task Verified!</b>\n\n"
+        f"🎯 {safe_title}\n"
+        f"💰 <b>+{int(points)} Points</b> added to your balance.\n"
+        f"✅ Verified by {provider_label}."
+    )
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = urlencode({"chat_id": str(int(user_id)), "text": text, "parse_mode": "HTML"}).encode("utf-8")
+        req = Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "UnlimitedEnergyBot/RewardNotify"}, method="POST")
+        with urlopen(req, timeout=5) as response:
+            return 200 <= int(getattr(response, "status", 200)) < 300
+    except Exception:
+        logger.exception("Reward notification failed | provider=%s user=%s", provider, user_id)
+        return False
 
 
 def _offerwallme_credentials():
@@ -976,6 +1036,9 @@ def _process_offerwallme_postback(params: Dict[str, Any]):
     except Exception:
         logger.exception("Offerwall.me activity log failed | user=%s", user_id)
     matched_task_id = _mark_offerwall_submission_from_postback(user_id, reward_raw, event_id, points, params.get("offer_type"), params.get("offer_name"))
+    offer_title = str(params.get("offer_name") or params.get("offer_type") or "Rewards Task")
+    _mark_provider_pending_rewarded("offerwallme", user_id, event_id, points, str(params.get("offer_id") or params.get("offerId") or ""))
+    _notify_user_verified(user_id, "offerwallme", points, offer_title)
 
     return {"ok": True, "message": "credited", "provider": "offerwallme", "event_id": event_id, "user_id": user_id, "points": points, **({"task_id": matched_task_id} if matched_task_id else {})}
 
@@ -1044,6 +1107,8 @@ def process_postback(provider: str, params: Dict[str, Any]):
             add_activity(user_id,"🇧🇩 CPAlead task conversion",points)
         except Exception:
             logger.exception("CPAlead transaction/activity failed | event=%s",event_id)
+        _mark_provider_pending_rewarded("cpalead", user_id, event_id, points, offer_id)
+        _notify_user_verified(user_id, "cpalead", points, offer_title)
         return {"ok":True,"message":"credited","provider":"cpalead","event_id":event_id,"user_id":user_id,"points":points}
     if provider != "cpagrip" or not _enabled("cpagrip"):
         return {"ok": False, "error": "provider_disabled"}
@@ -1136,6 +1201,8 @@ def process_postback(provider: str, params: Dict[str, Any]):
         add_activity(user_id, "💸 CPAGrip conversion", points)
     except Exception:
         logger.exception("Activity log failed | user=%s", user_id)
+    _mark_provider_pending_rewarded(provider, user_id, event_id, points, offer_id)
+    _notify_user_verified(user_id, provider, points, offer_title)
     return {"ok": True, "message": "credited", "provider": provider, "event_id": event_id, "user_id": user_id, "points": points}
 
 

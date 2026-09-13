@@ -22,7 +22,7 @@ from provider_integrations import (
     refresh_offerwallme_tasks, submit_offerwallme_task_proof, _offerwallme_reward_points,
     create_offerwall_task_proof, get_offerwall_task_submission, mark_offerwall_task_submission,
     get_cpa_lead_bd_offers, get_cached_cpa_lead_bd_offers, refresh_cpa_lead_bd_offers,
-    _cpa_lead_member_reward_points, _cpa_lead_offer_url,
+    _cpa_lead_member_reward_points, _cpa_lead_offer_url, _record_provider_pending,
 )
 
 logger = logging.getLogger(__name__)
@@ -746,6 +746,7 @@ async def cpalead_task_callback(update, context):
     title = str(offer.get("title") or "BD Task")
     description = str(offer.get("description") or "").replace("\n", "\n").strip()
     url = _cpa_lead_offer_url(offer, q.from_user.id)
+    _record_provider_pending("cpalead", q.from_user.id, offer_id, title, reward, offer.get("provider_reward", 0))
     text = f"🎯 **{_md(title)}**\n\n"
     if description:
         text += f"{_md(description)}\n\n"
@@ -819,6 +820,10 @@ async def offerwallme_task_callback(update, context):
             task_title=str(task.get("title") or "")[:200],
             proof_kind="none",
             proof_text="",
+        )
+        _record_provider_pending(
+            "offerwallme", q.from_user.id, task_id, str(task.get("title") or "Reward Task"),
+            _offerwallme_reward_points(reward_raw, q.from_user.id), reward_raw
         )
     except Exception:
         logger.exception("Could not create Offerwall.me pending task slot | user=%s task=%s", q.from_user.id, task_id)
