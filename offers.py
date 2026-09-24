@@ -287,23 +287,50 @@ async def provider_offer_callback(update: Update, context: ContextTypes.DEFAULT_
         reward_points, offer.get("provider_reward", 0)
     )
     # Provider payout is intentionally hidden from members. Member-facing reward is fixed/configured.
+    platform = str(offer.get("platform") or "").strip()
+    category = str(offer.get("category") or "").strip()
+
     detail_lines = [
         "🎁 <b>OFFER DETAILS</b>",
         "",
         f"📌 {title}",
         f"💰 Your reward: +{reward_points} Points",
     ]
+
+    # Show provider-supplied metadata so members can understand what the
+    # advertiser expects instead of seeing only a title and points.
+    if platform:
+        detail_lines.append(f"📱 Platform: {html_escape(platform)}")
+    if category:
+        detail_lines.append(f"🏷 Category: {html_escape(category)}")
+
     if description:
-        detail_lines += ["", description]
+        detail_lines += [
+            "",
+            "📋 <b>Provider instructions</b>",
+            html_escape(description),
+        ]
+    else:
+        detail_lines += [
+            "",
+            "📋 <b>Requirements</b>",
+            "Open the offer page and follow the advertiser's exact instructions. "
+            "The required event/action is defined by the provider and may differ "
+            "between offers.",
+        ]
+
     detail_lines += [
         "",
-        "Complete the offer according to its instructions. "
-        "⏳ Status: In Progress — complete the offer. "
-        "Your Points will be added automatically after a verified conversion callback.",
+        "⏳ <b>Verification:</b> Your Points are added automatically only after "
+        "the provider sends a verified conversion callback.",
+        "⚠️ Do not use VPN/proxy, fake information, automation, or self-complete "
+        "the offer. Follow the provider's rules.",
     ]
+
     await query.edit_message_text(
         "\n".join(detail_lines),
         reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 View Offer / Requirements", url=url)],
             [InlineKeyboardButton("🚀 Start Offer", url=url)],
             *([[InlineKeyboardButton("🧪 Admin Test Complete", callback_data=f"admtest_offer_{provider}_{offer_id}")]] if int(query.from_user.id) == int(ADMIN_ID) else []),
             [InlineKeyboardButton("⬅️ Offers", callback_data="offers")],
