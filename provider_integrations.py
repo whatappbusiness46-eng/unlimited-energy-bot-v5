@@ -13,7 +13,6 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
 
 from database import db, add_balance, add_activity, get_user, record_transaction, remove_balance, get_membership_multiplier
 from config import ADMIN_ID
@@ -104,37 +103,14 @@ def _json_request(url: str, *, method="GET", params=None, headers=None,
         headers.setdefault("Content-Type", "application/json")
 
     req = Request(url, data=data, headers=headers, method=method.upper())
-    try:
-        with urlopen(req, timeout=timeout) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-            if not raw:
-                return {}
-            try:
-                return json.loads(raw)
-            except json.JSONDecodeError:
-                return raw
-    except HTTPError as exc:
-        # Provider/CDN may reject Render's IP with 403. Do not let that
-        # exception abort Task Center refresh; return a diagnostic payload so
-        # the caller can try its fallback request and keep the UI usable.
+    with urlopen(req, timeout=timeout) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+        if not raw:
+            return {}
         try:
-            body_text = exc.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            body_text = ""
-        logger.warning(
-            "HTTP error from provider endpoint | status=%s method=%s url=%s body=%s",
-            getattr(exc, "code", "?"), method.upper(), url, body_text,
-        )
-        return {"status": 0, "error": f"http_{getattr(exc, 'code', 'error')}", "http_status": getattr(exc, "code", None)}
-    except URLError as exc:
-        logger.warning(
-            "Provider endpoint connection failed | method=%s url=%s error=%s",
-            method.upper(), url, exc,
-        )
-        return {"status": 0, "error": "connection_error", "detail": str(exc)}
-    except TimeoutError:
-        logger.warning("Provider endpoint timed out | method=%s url=%s", method.upper(), url)
-        return {"status": 0, "error": "timeout"}
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
 
 
 
@@ -343,37 +319,24 @@ def _offerwallme_request(endpoint: str, user_id: int, *, method="GET", body=None
 
 
 def _offerwallme_list(payload):
-    """Extract Offerwall.me items from both legacy and current response envelopes."""
+    """Extract provider items from common Offerwall.me response envelopes."""
     if isinstance(payload, list):
-        return [x for x in payload if isinstance(x, dict)]
+        return payload
     if not isinstance(payload, dict):
         return []
-
-    # Different Offerwall.me deployments/envelopes may wrap the same inventory
-    # under data/result/response or under tasks/offers/items. Walk only the
-    # known collection keys so metadata dictionaries are never treated as tasks.
-    collection_keys = (
-        "tasks", "offers", "shortlinks", "results", "items", "records",
-        "campaigns", "inventory", "data", "result", "response",
-    )
-    seen = set()
-    def walk(value, depth=0):
-        if depth > 4 or id(value) in seen:
-            return []
+    data = payload.get("data")
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("offers", "tasks", "shortlinks", "results", "items", "data"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+    for key in ("offers", "tasks", "shortlinks", "results", "items"):
+        value = payload.get(key)
         if isinstance(value, list):
-            return [x for x in value if isinstance(x, dict)]
-        if not isinstance(value, dict):
-            return []
-        seen.add(id(value))
-        for key in collection_keys:
-            if key not in value:
-                continue
-            found = walk(value.get(key), depth + 1)
-            if found:
-                return found
-        return []
-
-    return walk(payload)
+            return value
+    return []
 
 
 def _offerwallme_form_request(endpoint: str, params: Dict[str, Any]):
@@ -389,24 +352,14 @@ def _offerwallme_form_request(endpoint: str, params: Dict[str, Any]):
     }
     data = urlencode({str(k): str(v) for k, v in (params or {}).items() if v is not None}).encode("utf-8")
     req = Request(endpoint, data=data, headers=headers, method="POST")
-    try:
-        with urlopen(req, timeout=15) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-            if not raw:
-                return {}
-            try:
-                return json.loads(raw)
-            except json.JSONDecodeError:
-                return raw
-    except HTTPError as exc:
-        logger.warning(
-            "Offerwall.me form POST rejected | status=%s endpoint=%s",
-            getattr(exc, "code", "?"), endpoint,
-        )
-        return {"status": 0, "error": f"http_{getattr(exc, 'code', 'error')}", "http_status": getattr(exc, "code", None)}
-    except (URLError, TimeoutError) as exc:
-        logger.warning("Offerwall.me form POST failed | endpoint=%s error=%s", endpoint, exc)
-        return {"status": 0, "error": "post_request_failed"}
+    with urlopen(req, timeout=15) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
 
 
 def get_offerwallme_offers(user_id: int, force_refresh: bool = False):
@@ -504,46 +457,20 @@ def get_offerwallme_tasks(user_id: int, force_refresh: bool = False):
     cached = None if force_refresh else _cache_get(cache_key)
     if cached is not None:
         return cached
-    endpoint = _env("OFFERWALLME_TASKS_API_URL", "https://offerwall.me/taskapi.php")
-    payload = _offerwallme_request(endpoint, user_id)
-    raw_items = _offerwallme_list(payload)
-
-    # Some PHP installations accept the same credentials through POST rather
-    # than GET. If GET returned no usable inventory, retry as form-encoded POST.
-    # This is read-only and only runs when the first response produced no items.
-    if not raw_items:
-        try:
-            api_key, bearer = _offerwallme_credentials()
-            form = {
-                "api": api_key,
-                "id": str(user_id),
-                "ip": _offerwallme_public_ip(),
-                "token": bearer,
-                "country": _env("OFFERWALLME_COUNTRY", "BD").upper(),
-            }
-            post_payload = _offerwallme_form_request(endpoint, form)
-            raw_items = _offerwallme_list(post_payload)
-            if raw_items:
-                payload = post_payload
-        except Exception:
-            logger.exception("Offerwall.me task POST fallback failed | user=%s", user_id)
-
-    if not raw_items and isinstance(payload, dict):
-        logger.warning(
-            "Offerwall.me returned no task items | user=%s status=%r error=%r message=%r endpoint=%s",
-            user_id, payload.get("status"), payload.get("error"), payload.get("message"), endpoint,
-        )
-
+    payload = _offerwallme_request(
+        _env("OFFERWALLME_TASKS_API_URL", "https://offerwall.me/taskapi.php"),
+        user_id,
+    )
     result = []
-    for raw in raw_items:
+    for raw in _offerwallme_list(payload):
         if not isinstance(raw, dict):
             continue
-        task_id = _first(raw, ("id", "task_id", "taskId", "taskid", "offer_id", "offerId", "campaign_id", "campaignId"))
+        task_id = _first(raw, ("id", "task_id", "taskId"))
         if not task_id:
             continue
         task_url = _first(
             raw,
-            ("url", "link", "task_url", "taskUrl", "tracking_url", "click_url", "clickUrl", "offer_url", "offerUrl", "task_link", "taskLink"),
+            ("url", "link", "task_url", "taskUrl", "tracking_url", "click_url", "offer_url"),
             "",
         )
         reward = _first(
