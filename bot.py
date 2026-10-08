@@ -144,7 +144,7 @@ def home():
     return """<!doctype html>
 <html lang="en">
 <head>
-    <meta name="offerwall-verification" content="6aa07179373d65cfef066691">
+    <meta name="offerwall-verification" content="6ac7a4bf2eaa64840117cb2c">
     <meta charset="utf-8">
     <title>Unlimited Energy Bot</title>
 </head>

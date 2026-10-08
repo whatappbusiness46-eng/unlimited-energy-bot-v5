@@ -334,7 +334,7 @@ def request_vip_task_review(user_id, task_id):
     if not user or not task or user.get("banned") or user.get("blacklisted") or not task_visible(user_id, task):
         return False, "Unavailable."
     if not _vip_manual_review_required(user_id, task):
-        return False, "This task is auto-verified for Normal members."
+        return False, "এই টাস্কটি সাধারণ সদস্যদের জন্য স্বয়ংক্রিয়ভাবে যাচাই হয়।"
     if not task_available(user_id, task_id):
         existing = completions_collection.find_one({"user_id": int(user_id), "task_id": str(task_id)})
         if existing and existing.get("status") == "pending":
@@ -353,9 +353,9 @@ def request_vip_task_review(user_id, task_id):
 def approve_task_completion(user_id, task_id, admin_id):
     try:
         if int(admin_id) != int(ADMIN_ID):
-            return False, "Admin only."
+            return False, "শুধু অ্যাডমিনের জন্য।"
     except Exception:
-        return False, "Admin only."
+        return False, "শুধু অ্যাডমিনের জন্য।"
     task = get_task(task_id); user = get_user(user_id, create=False)
     if not task or not user:
         return False, "Task or user not found."
@@ -394,9 +394,9 @@ def approve_task_completion(user_id, task_id, admin_id):
 def reject_task_completion(user_id, task_id, admin_id, reason="Rejected"):
     try:
         if int(admin_id) != int(ADMIN_ID):
-            return False, "Admin only."
+            return False, "শুধু অ্যাডমিনের জন্য।"
     except Exception:
-        return False, "Admin only."
+        return False, "শুধু অ্যাডমিনের জন্য।"
     record = completions_collection.find_one({"user_id": int(user_id), "task_id": str(task_id), "status": "pending"})
     if not record:
         return False, "No pending completion found."
@@ -426,7 +426,7 @@ def complete_task(user_id, task_id, bot=None):
         if not verified:
             return False, "Please complete the Telegram join task first."
     elif TASK_VERIFICATION_ENABLED and verification == "manual":
-        return False, "This task requires admin/provider verification and cannot be auto-verified."
+        return False, "এই টাস্কের জন্য অ্যাডমিন/প্রোভাইডার যাচাই প্রয়োজন; এটি স্বয়ংক্রিয়ভাবে যাচাই করা যাবে না।"
 
     settings = db["bot_settings"].find_one({"_id": "main"}) or {}
     daily_limit = max(1, _safe_int(settings.get("daily_task_limit"), 20))
@@ -479,7 +479,7 @@ async def complete_task_async(user_id, task_id, bot):
     if verification == "telegram_join" and not await _verify_telegram_join(bot, user_id, task.get("url")):
         return False, "Please complete the Telegram join task first."
     if TASK_VERIFICATION_ENABLED and verification == "manual":
-        return False, "This task requires admin/provider verification and cannot be auto-verified."
+        return False, "এই টাস্কের জন্য অ্যাডমিন/প্রোভাইডার যাচাই প্রয়োজন; এটি স্বয়ংক্রিয়ভাবে যাচাই করা যাবে না।"
     settings = db["bot_settings"].find_one({"_id": "main"}) or {}
     daily_limit = max(1, _safe_int(settings.get("daily_task_limit"), 20))
     count, reset = _daily_count(user)
@@ -576,7 +576,7 @@ async def _refresh_tasks_in_background(query, user_id: int):
             offerwall_tasks = _get_offerwall_tasks_cached(user_id)
             normal = [t for t in task_list if t.get("audience","normal") in {"normal","both"}]
             vip = [t for t in task_list if t.get("audience","normal") in {"vip","both"}]
-            text = "🎯 **TASK CENTER**\n\nSelect a task category below."
+            text = "🎯 **টাস্ক সেন্টার**\n\nনিচের তালিকা থেকে টাস্কের ধরন বেছে নিন।"
             await query.edit_message_text(text, reply_markup=tasks_menu(user_id, offerwall_tasks=offerwall_tasks), parse_mode="Markdown")
     except Exception:
         logger.exception("Background task refresh failed | user=%s", user_id)
@@ -585,9 +585,9 @@ async def _refresh_tasks_in_background(query, user_id: int):
                 db_user = get_user(user_id, create=False)
                 if db_user and not db_user.get("banned") and not db_user.get("blacklisted"):
                     await query.edit_message_text(
-                        "🎯 **TASK CENTER**\n\n"
-                        "No live provider tasks are available right now.\n"
-                        "You can still use the task categories below; provider inventory refreshes automatically.",
+                        "🎯 **টাস্ক সেন্টার**\n\n"
+                        "এই মুহূর্তে কোনো টাস্ক পাওয়া যাচ্ছে না।\n"
+                        "নিচের টাস্কের ধরনগুলো ব্যবহার করতে পারবেন; তালিকা স্বয়ংক্রিয়ভাবে আপডেট হবে।",
                         reply_markup=tasks_menu(user_id),
                         parse_mode="Markdown",
                     )
@@ -606,9 +606,9 @@ def tasks_menu(user_id=None, offerwall_tasks=None, offerwall_category=None):
         # Keep the provider areas separate and clean:
         # BD Advance Tasks = CPAlead BD offers
         # Rewards Tasks = Offerwall.me categories (the old task buttons).
-        buttons.append([InlineKeyboardButton("🇧🇩 BD Advance Tasks", callback_data="cpalead_tasks")])
-        buttons.append([InlineKeyboardButton("🎁 Rewards Tasks", callback_data="reward_tasks")])
-    buttons.append([InlineKeyboardButton("🏠 Home", callback_data="home")])
+        buttons.append([InlineKeyboardButton("🇧🇩 BD টাস্ক", callback_data="cpalead_tasks")])
+        buttons.append([InlineKeyboardButton("🎁 রিওয়ার্ড টাস্ক", callback_data="reward_tasks")])
+    buttons.append([InlineKeyboardButton("🏠 হোম", callback_data="home")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -632,12 +632,12 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     vip=[t for t in task_list if t.get("audience","normal") in {"vip","both"}]
     if not task_list and not offerwall_tasks:
         text = (
-            "🎯 **TASK CENTER**\n\n"
-            "No live provider tasks are available right now.\n"
-            "Provider inventory refreshes automatically. Try again in a moment."
+            "🎯 **টাস্ক সেন্টার**\n\n"
+            "এই মুহূর্তে কোনো টাস্ক পাওয়া যাচ্ছে না।\n"
+            "টাস্ক তালিকা স্বয়ংক্রিয়ভাবে আপডেট হয়। কিছুক্ষণ পর আবার চেষ্টা করুন।"
         )
     else:
-        text = "🎯 **TASK CENTER**\n\nSelect a task category below."
+        text = "🎯 **টাস্ক সেন্টার**\n\nনিচের তালিকা থেকে টাস্কের ধরন বেছে নিন।"
     markup = tasks_menu(user.id, offerwall_tasks=offerwall_tasks)
     if update.callback_query:
         try:
@@ -652,31 +652,31 @@ async def task_callback(update, context):
     q=update.callback_query
     if not q or not str(q.data).startswith("task_"): return
     await q.answer(); tid=str(q.data)[5:]; task=get_task(tid)
-    if not task or not task_visible(q.from_user.id, task): await q.edit_message_text("⚠️ Task not found or unavailable."); return
+    if not task or not task_visible(q.from_user.id, task): await q.edit_message_text("⚠️ টাস্কটি পাওয়া যাচ্ছে না বা বর্তমানে বন্ধ আছে।"); return
     buttons=[]
-    if task.get("url"): buttons.append([InlineKeyboardButton("🚀 Open Task", url=task["url"])])
+    if task.get("url"): buttons.append([InlineKeyboardButton("🚀 টাস্ক শুরু করুন", url=task["url"])])
     verification = _normalise_verification(task.get("verification_method"), task.get("url"))
     if _vip_manual_review_required(q.from_user.id, task):
-        buttons.append([InlineKeyboardButton("📨 Submit for Admin Approval", callback_data=f"task_complete_{tid}")])
+        buttons.append([InlineKeyboardButton("📨 অ্যাডমিন যাচাইয়ের জন্য পাঠান", callback_data=f"task_complete_{tid}")])
     elif verification in {"telegram_join", "click_once"}:
-        label = "🎁 Claim 10 Points" if verification == "click_once" else "✅ Verify Task"
+        label = "🎁 ১০ Points সংগ্রহ করুন" if verification == "click_once" else "✅ টাস্ক যাচাই করুন"
         buttons.append([InlineKeyboardButton(label, callback_data=f"task_complete_{tid}")])
-    buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
+    buttons.append([InlineKeyboardButton("⬅️ টাস্কসমূহ", callback_data="tasks"), InlineKeyboardButton("🏠 হোম", callback_data="home")])
     audience = str(task.get("audience", "normal")).upper()
-    await q.edit_message_text(f"🎯 **{_md(task.get('title',''))}**\n\n{_md(task.get('description',''))}\n\n💰 Reward: {_safe_int(task.get('reward'),0)} Points\n🏷 Audience: {_md(audience)}\n🔐 Verification: {_md(task.get('verification_method','telegram_join'))}", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    await q.edit_message_text(f"🎯 **{_md(task.get('title',''))}**\n\n{_md(task.get('description',''))}\n\n💰 পুরস্কার: {_safe_int(task.get('reward'),0)} Points\n🏷 সদস্যের ধরন: {_md(audience)}\n🔐 যাচাই পদ্ধতি: {_md(task.get('verification_method','telegram_join'))}", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 
 async def task_complete_callback(update, context):
     q=update.callback_query
     if not q or not str(q.data).startswith("task_complete_"): return
     await q.answer(); tid=str(q.data)[len("task_complete_"):]; task=get_task(tid)
-    if not task: await q.edit_message_text("⚠️ Task not found."); return
+    if not task: await q.edit_message_text("⚠️ টাস্কটি পাওয়া যাচ্ছে না।"); return
     ok,msg=await complete_task_async(q.from_user.id,tid,context.bot)
     if ok and _vip_manual_review_required(q.from_user.id, task):
-        text = f"📨 **TASK SUBMITTED**\n\n🎯 {_md(task.get('title',''))}\n\nYour VIP task has been sent to Admin for approval.\n💰 Reward will be credited after approval."
+        text = f"📨 **টাস্ক জমা হয়েছে**\n\n🎯 {_md(task.get('title',''))}\n\nআপনার VIP টাস্কটি অ্যাডমিন যাচাইয়ের জন্য পাঠানো হয়েছে।\n💰 অনুমোদনের পর Points যোগ হবে।"
     else:
-        text = f"🎉 **TASK COMPLETED!**\n\n🎯 {_md(task.get('title',''))}\n💰 Reward credited successfully." if ok else f"❌ **Task not completed**\n\n{msg}"
-    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks",callback_data="tasks")],[InlineKeyboardButton("🏠 Home",callback_data="home")]]), parse_mode="Markdown")
+        text = f"🎉 **টাস্ক সম্পন্ন হয়েছে!**\n\n🎯 {_md(task.get('title',''))}\n💰 Points সফলভাবে যোগ হয়েছে।" if ok else f"❌ **টাস্ক সম্পন্ন হয়নি**\n\n{msg}"
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ টাস্কসমূহ",callback_data="tasks")],[InlineKeyboardButton("🏠 হোম",callback_data="home")]]), parse_mode="Markdown")
 
 
 async def cpalead_tasks_callback(update, context):
@@ -692,7 +692,7 @@ async def cpalead_tasks_callback(update, context):
         except Exception:
             logger.exception("CPAlead BD task refresh failed | user=%s", user_id)
             offers = []
-    lines = ["🇧🇩 **BD Advance Tasks**", "", "Complete the task genuinely. Reward is credited after verified provider conversion.", ""]
+    lines = ["🇧🇩 **BD টাস্ক**", "", "টাস্কটি সঠিকভাবে সম্পন্ন করুন। প্রোভাইডার যাচাই করার পর Points যোগ হবে।", ""]
     buttons = []
     for offer in offers[:20]:
         oid = str(offer.get("offer_id") or "").strip()
@@ -702,8 +702,8 @@ async def cpalead_tasks_callback(update, context):
         title = str(offer.get("title") or "BD Task").strip()
         buttons.append([InlineKeyboardButton(f"🎯 {title[:30]} (+{reward})", callback_data=f"cpalead_{oid}")])
     if not buttons:
-        lines.append("😔 No BD tasks are available right now.")
-    buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
+        lines.append("😔 এই মুহূর্তে কোনো BD টাস্ক পাওয়া যাচ্ছে না।")
+    buttons.append([InlineKeyboardButton("⬅️ টাস্কসমূহ", callback_data="tasks"), InlineKeyboardButton("🏠 হোম", callback_data="home")])
     await q.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 
@@ -742,12 +742,12 @@ async def rewards_tasks_callback(update, context):
         )])
 
     text = (
-        "🎁 **REWARDS TASKS**\n\n"
-        "Choose a task type below.\n"
-        "Rewards are credited after verified Offerwall.me conversion.\n\n"
-        f"📋 Available Tasks: {len(tasks)}"
+        "🎁 **রিওয়ার্ড টাস্ক**\n\n"
+        "নিচের তালিকা থেকে টাস্কের ধরন বেছে নিন।\n"
+        "Offerwall.me থেকে কাজ যাচাই হওয়ার পর Points যোগ হবে।\n\n"
+        f"📋 উপলভ্য টাস্ক: {len(tasks)}"
     )
-    buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
+    buttons.append([InlineKeyboardButton("⬅️ টাস্কসমূহ", callback_data="tasks"), InlineKeyboardButton("🏠 হোম", callback_data="home")])
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 
@@ -766,12 +766,12 @@ async def cpalead_task_callback(update, context):
         except Exception:
             offer = None
     if not offer:
-        await q.edit_message_text("⚠️ This BD task is no longer available.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD Advance Tasks", callback_data="cpalead_tasks")]]))
+        await q.edit_message_text("⚠️ এই BD টাস্কটি আর পাওয়া যাচ্ছে না।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD টাস্ক", callback_data="cpalead_tasks")]]))
         return
     if _provider_task_hidden("cpalead", q.from_user.id, offer_id):
         await q.edit_message_text(
-            "ℹ️ This task has already been started or completed and is no longer available.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD Advance Tasks", callback_data="cpalead_tasks")]])
+            "ℹ️ এই টাস্কটি ইতিমধ্যে শুরু বা সম্পন্ন হয়েছে এবং এখন আর পাওয়া যাবে না।",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD টাস্ক", callback_data="cpalead_tasks")]])
         )
         return
     reward = _cpa_lead_member_reward_points(offer.get("provider_reward", 0), q.from_user.id)
@@ -782,13 +782,13 @@ async def cpalead_task_callback(update, context):
     text = f"🎯 **{_md(title)}**\n\n"
     if description:
         text += f"{_md(description)}\n\n"
-    text += f"💰 Reward: +{reward} Points\n🇧🇩 Type: BD Advance Task\n\n⏳ Status: In Progress — complete the task. Points will be added automatically after provider verification."
+    text += f"💰 পুরস্কার: +{reward} Points\n🇧🇩 ধরন: BD Advance Task\n\n📌 টাস্কটি শুরু করুন এবং পুরো কাজটি সম্পন্ন করুন। প্রোভাইডার যাচাই করার পর Points স্বয়ংক্রিয়ভাবে যোগ হবে।"
     buttons = []
     if url:
-        buttons.append([InlineKeyboardButton("🚀 Open Task", url=url)])
+        buttons.append([InlineKeyboardButton("🚀 টাস্ক শুরু করুন", url=url)])
     if int(q.from_user.id) == int(ADMIN_ID):
-        buttons.append([InlineKeyboardButton("🧪 Admin Test Complete", callback_data=f"admtest_cpa_{offer_id}")])
-    buttons.append([InlineKeyboardButton("⬅️ BD Advance Tasks", callback_data="cpalead_tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
+        buttons.append([InlineKeyboardButton("🧪 অ্যাডমিন টেস্ট সম্পন্ন", callback_data=f"admtest_cpa_{offer_id}")])
+    buttons.append([InlineKeyboardButton("⬅️ BD টাস্ক", callback_data="cpalead_tasks"), InlineKeyboardButton("🏠 হোম", callback_data="home")])
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 
@@ -803,7 +803,7 @@ async def offerwallme_category_callback(update, context):
         return
     tasks = _offerwall_category_tasks(q.from_user.id, category)
     label = _offerwall_task_category_label(category)
-    lines = [f"{label}", "", "Complete genuine tasks. Rewards are credited only after verified provider conversion.", ""]
+    lines = [f"{label}", "", "টাস্কটি সঠিকভাবে সম্পন্ন করুন। প্রোভাইডার যাচাই করার পর Points যোগ হবে।", ""]
     buttons = []
     if tasks:
         for task in tasks[:OFFERWALLME_TASK_LIMIT]:
@@ -814,11 +814,11 @@ async def offerwallme_category_callback(update, context):
             reward = _offerwallme_reward_points(task.get("reward", task.get("payout", task.get("amount", 0))), q.from_user.id)
             buttons.append([InlineKeyboardButton(f"🎯 {title[:28]} (+{reward})", callback_data=f"owtask_{task_id}")])
     else:
-        lines.append("😔 No matching offers are available for you right now.")
+        lines.append("😔 এই মুহূর্তে এই ধরনের কোনো টাস্ক পাওয়া যাচ্ছে না।")
         if category == "video":
-            lines.append("Video offers depend on the current Offerwall.me inventory, country and device.")
-    lines += ["", "Provider inventory changes automatically; a task may disappear after it is completed or expires."]
-    buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
+            lines.append("ভিডিও টাস্ক Offerwall.me-এর বর্তমান inventory, দেশ ও device-এর ওপর নির্ভর করে।")
+    lines += ["", "টাস্কের তালিকা স্বয়ংক্রিয়ভাবে পরিবর্তন হয়; কোনো টাস্ক সম্পন্ন বা মেয়াদ শেষ হলে সেটি আর দেখা যাবে না।"]
+    buttons.append([InlineKeyboardButton("⬅️ টাস্কসমূহ", callback_data="tasks"), InlineKeyboardButton("🏠 হোম", callback_data="home")])
     await q.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 
@@ -834,13 +834,13 @@ async def offerwallme_task_callback(update, context):
         tasks = []
     task = next((t for t in tasks if str(t.get("id")) == task_id), None)
     if not task:
-        await q.edit_message_text("⚠️ This reward task is no longer available.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks", callback_data="tasks")]]))
+        await q.edit_message_text("⚠️ এই রিওয়ার্ড টাস্কটি আর পাওয়া যাচ্ছে না।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ টাস্কসমূহ", callback_data="tasks")]]))
         return
 
     if _provider_task_hidden("offerwallme", q.from_user.id, task_id):
         await q.edit_message_text(
-            "ℹ️ This task has already been started or completed and is no longer available.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Tasks", callback_data="tasks")]])
+            "ℹ️ এই টাস্কটি ইতিমধ্যে শুরু বা সম্পন্ন হয়েছে এবং এখন আর পাওয়া যাবে না।",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ টাস্কসমূহ", callback_data="tasks")]])
         )
         return
 
@@ -884,26 +884,26 @@ async def offerwallme_task_callback(update, context):
     if description:
         text += f"{_md(description)}\n\n"
     if instructions:
-        text += f"📋 **Instructions:**\n{_md(instructions)}\n\n"
+        text += f"📋 **নির্দেশনা:**\n{_md(instructions)}\n\n"
     category = _offerwall_task_category(task)
     category_label = _offerwall_task_category_label(category)
     platform = str(task.get("platform") or "").strip()
-    text += f"💰 Reward: +{reward} Points\n🏷 Type: {_md(category_label)}"
+    text += f"💰 পুরস্কার: +{reward} Points\n🏷 ধরন: {_md(category_label)}"
     if platform:
         text += f"\n📱 Platform: {_md(platform)}"
-    text += "\n\n🇧🇩 **কাজটি যেভাবে সম্পূর্ণ করবেন:**\n1️⃣ নিচের **🚀 কাজ শুরু করুন** বাটনে চাপ দিন।\n2️⃣ Provider-এর দেওয়া কাজটি পুরোপুরি সম্পূর্ণ করুন।\n3️⃣ কাজ শেষ হলে Provider আপনার completion verify করবে।\n4️⃣ Verify হলে আপনার Points স্বয়ংক্রিয়ভাবে যোগ হবে।\n\n⚠️ শুধু বাটনে চাপ দিলেই Points যোগ হবে না।"
+    text += "\n\n🇧🇩 **কাজটি যেভাবে সম্পূর্ণ করবেন:**\n1️⃣ নিচের **🚀 কাজ শুরু করুন** বাটনে চাপ দিন।\n2️⃣ প্রোভাইডারের দেওয়া কাজটি পুরোপুরি সম্পূর্ণ করুন।\n3️⃣ কাজ শেষ হলে প্রোভাইডার আপনার completion verify করবে।\n4️⃣ Verify হলে আপনার Points স্বয়ংক্রিয়ভাবে যোগ হবে।\n\n⚠️ শুধু বাটনে চাপ দিলেই Points যোগ হবে না।"
 
     buttons = []
     task_url = _offerwallme_task_tracking_url(str(task.get("url") or task.get("link") or "").strip(), q.from_user.id)
     if task_url and submission_status != "rewarded":
         buttons.append([InlineKeyboardButton("🚀 কাজ শুরু করুন", url=task_url)])
-        buttons.append([InlineKeyboardButton("⏳ Pending", callback_data=f"owpending_{task_id}")])
+        buttons.append([InlineKeyboardButton("✅ কাজ শেষ করেছি", callback_data=f"owpending_{task_id}")])
     if int(q.from_user.id) == int(ADMIN_ID) and submission_status != "rewarded":
-        buttons.append([InlineKeyboardButton("🧪 Admin Test Complete", callback_data=f"admtest_ow_{task_id}")])
+        buttons.append([InlineKeyboardButton("🧪 অ্যাডমিন টেস্ট সম্পন্ন", callback_data=f"admtest_ow_{task_id}")])
     if submission_status == "rewarded":
-        text = text.replace("🇧🇩 **কাজটি যেভাবে সম্পূর্ণ করবেন:**\n1️⃣ নিচের **🚀 কাজ শুরু করুন** বাটনে চাপ দিন।\n2️⃣ Provider-এর দেওয়া কাজটি পুরোপুরি সম্পূর্ণ করুন।\n3️⃣ কাজ শেষ হলে Provider আপনার completion verify করবে।\n4️⃣ Verify হলে আপনার Points স্বয়ংক্রিয়ভাবে যোগ হবে।\n\n⚠️ শুধু বাটনে চাপ দিলেই Points যোগ হবে না।", "🇧🇩 **কাজটি সম্পূর্ণ হয়েছে।**\n\n✅ Provider আপনার কাজ verify করেছে এবং Points যোগ করা হয়েছে।")
+        text = text.replace("🇧🇩 **কাজটি যেভাবে সম্পূর্ণ করবেন:**\n1️⃣ নিচের **🚀 কাজ শুরু করুন** বাটনে চাপ দিন।\n2️⃣ প্রোভাইডারের দেওয়া কাজটি পুরোপুরি সম্পূর্ণ করুন।\n3️⃣ কাজ শেষ হলে প্রোভাইডার আপনার completion verify করবে।\n4️⃣ Verify হলে আপনার Points স্বয়ংক্রিয়ভাবে যোগ হবে।\n\n⚠️ শুধু বাটনে চাপ দিলেই Points যোগ হবে না।", "🇧🇩 **কাজটি সম্পূর্ণ হয়েছে।**\n\n✅ প্রোভাইডার আপনার কাজ verify করেছে এবং Points যোগ করা হয়েছে।")
         buttons = []
-    buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
+    buttons.append([InlineKeyboardButton("⬅️ টাস্কসমূহ", callback_data="tasks"), InlineKeyboardButton("🏠 হোম", callback_data="home")])
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 
@@ -911,7 +911,26 @@ async def offerwallme_pending_callback(update, context):
     q = update.callback_query
     if not q or not str(q.data).startswith("owpending_"):
         return
-    await q.answer("এখনও Provider থেকে completion verification আসেনি।", show_alert=True)
+    await q.answer("টাস্কটি Pending হয়েছে। প্রোভাইডারের verification-এর অপেক্ষায় আছে।", show_alert=True)
+    task_id = str(q.data)[len("owpending_"):]
+    try:
+        tasks = _get_offerwall_tasks_cached(q.from_user.id)
+        task = next((t for t in tasks if str(t.get("id")) == task_id), None)
+        if not task:
+            return
+        reward = _offerwallme_reward_points(task.get("reward", task.get("payout", task.get("amount", 0))), q.from_user.id)
+        title = _md(str(task.get("title") or "রিওয়ার্ড টাস্ক"))
+        text = (
+            f"🎯 **{title}**\n\n"
+            f"💰 পুরস্কার: +{reward} Points\n\n"
+            "⏳ **Pending**\n"
+            "প্রোভাইডার আপনার কাজ যাচাই করছে। যাচাই সফল হলে Points স্বয়ংক্রিয়ভাবে যোগ হবে।\n\n"
+            "⚠️ একই টাস্ক আবার শুরু করার প্রয়োজন নেই।"
+        )
+        buttons = [[InlineKeyboardButton("⏳ Pending", callback_data=f"owpending_{task_id}")], [InlineKeyboardButton("⬅️ রিওয়ার্ড টাস্ক", callback_data="reward_tasks"), InlineKeyboardButton("🏠 হোম", callback_data="home")]]
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    except Exception:
+        logger.exception("Could not show Offerwall.me pending state | user=%s task=%s", q.from_user.id, task_id)
 
 
 async def admin_test_cpalead_callback(update, context):
@@ -920,7 +939,7 @@ async def admin_test_cpalead_callback(update, context):
         return
     await q.answer()
     if int(q.from_user.id) != int(ADMIN_ID):
-        await q.edit_message_text("⛔ Admin only.")
+        await q.edit_message_text("⛔ শুধু অ্যাডমিনের জন্য।")
         return
     offer_id = str(q.data)[len("admtest_cpa_"):]
     offers = list(get_cached_cpa_lead_bd_offers(q.from_user.id) or [])
@@ -931,10 +950,10 @@ async def admin_test_cpalead_callback(update, context):
     points = _cpa_lead_member_reward_points(offer.get("provider_reward", 0), q.from_user.id)
     result = admin_test_provider_completion("cpalead", q.from_user.id, offer_id, points, str(offer.get("title") or "CPAlead Test"))
     if result.get("ok"):
-        await q.edit_message_text(f"🧪 **CPAlead ADMIN TEST**\\n\\n✅ Completed & credited\\n💰 +{points} Points\\n\\nThis test is available only to Admin ID.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD Advance Tasks", callback_data="cpalead_tasks")],[InlineKeyboardButton("🏠 Home", callback_data="home")]]))
+        await q.edit_message_text(f"🧪 **CPAlead ADMIN TEST**\\n\\n✅ Completed & credited\\n💰 +{points} Points\\n\\nThis test is available only to Admin ID.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD টাস্ক", callback_data="cpalead_tasks")],[InlineKeyboardButton("🏠 হোম", callback_data="home")]]))
     else:
         msg = "Already tested this offer." if result.get("error") == "already_tested" else f"Test failed: {result.get('error','unknown')}"
-        await q.edit_message_text(f"⚠️ {msg}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD Advance Tasks", callback_data="cpalead_tasks")]]))
+        await q.edit_message_text(f"⚠️ {msg}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BD টাস্ক", callback_data="cpalead_tasks")]]))
 
 
 async def admin_test_offerwallme_callback(update, context):
@@ -943,13 +962,13 @@ async def admin_test_offerwallme_callback(update, context):
         return
     await q.answer()
     if int(q.from_user.id) != int(ADMIN_ID):
-        await q.edit_message_text("⛔ Admin only.")
+        await q.edit_message_text("⛔ শুধু অ্যাডমিনের জন্য।")
         return
     task_id = str(q.data)[len("admtest_ow_"):]
     tasks = _get_offerwall_tasks_cached(q.from_user.id)
     task = next((t for t in tasks if str(t.get("id")) == task_id), None)
     if not task:
-        await q.edit_message_text("⚠️ Task not found.")
+        await q.edit_message_text("⚠️ টাস্কটি পাওয়া যাচ্ছে না।")
         return
     reward_raw = task.get("reward", task.get("payout", task.get("amount", 0)))
     points = _offerwallme_reward_points(reward_raw, q.from_user.id)
@@ -959,10 +978,10 @@ async def admin_test_offerwallme_callback(update, context):
             mark_offerwall_task_submission(q.from_user.id, task_id, "rewarded", submitted_at=int(time.time()), provider_reward_raw=str(reward_raw), task_title=str(task.get("title") or "")[:200], proof_kind="admin_test", proof_text="admin")
         except Exception:
             logger.exception("Could not mark Offerwall.me admin test submission")
-        await q.edit_message_text(f"🧪 **Offerwall.me ADMIN TEST**\\n\\n✅ Completed & credited\\n💰 +{points} Points\\n\\nThis test is available only to Admin ID.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Rewards Tasks", callback_data="reward_tasks")],[InlineKeyboardButton("🏠 Home", callback_data="home")]]))
+        await q.edit_message_text(f"🧪 **Offerwall.me ADMIN TEST**\\n\\n✅ Completed & credited\\n💰 +{points} Points\\n\\nThis test is available only to Admin ID.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ রিওয়ার্ড টাস্ক", callback_data="reward_tasks")],[InlineKeyboardButton("🏠 হোম", callback_data="home")]]))
     else:
         msg = "Already tested this task." if result.get("error") == "already_tested" else f"Test failed: {result.get('error','unknown')}"
-        await q.edit_message_text(f"⚠️ {msg}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Rewards Tasks", callback_data="reward_tasks")]]))
+        await q.edit_message_text(f"⚠️ {msg}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ রিওয়ার্ড টাস্ক", callback_data="reward_tasks")]]))
 
 
 async def offerwallme_task_proof_callback(update, context):
