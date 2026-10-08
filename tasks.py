@@ -891,18 +891,27 @@ async def offerwallme_task_callback(update, context):
     text += f"💰 Reward: +{reward} Points\n🏷 Type: {_md(category_label)}"
     if platform:
         text += f"\n📱 Platform: {_md(platform)}"
-    text += "\n\n⏳ **Status:** In Progress — complete the task. Points will be added automatically after provider verification."
+    text += "\n\n🇧🇩 **কাজটি যেভাবে সম্পূর্ণ করবেন:**\n1️⃣ নিচের **🚀 কাজ শুরু করুন** বাটনে চাপ দিন।\n2️⃣ Provider-এর দেওয়া কাজটি পুরোপুরি সম্পূর্ণ করুন।\n3️⃣ কাজ শেষ হলে Provider আপনার completion verify করবে।\n4️⃣ Verify হলে আপনার Points স্বয়ংক্রিয়ভাবে যোগ হবে।\n\n⚠️ শুধু বাটনে চাপ দিলেই Points যোগ হবে না।"
 
     buttons = []
     task_url = _offerwallme_task_tracking_url(str(task.get("url") or task.get("link") or "").strip(), q.from_user.id)
     if task_url and submission_status != "rewarded":
-        buttons.append([InlineKeyboardButton("🚀 Open Task", url=task_url)])
+        buttons.append([InlineKeyboardButton("🚀 কাজ শুরু করুন", url=task_url)])
+        buttons.append([InlineKeyboardButton("⏳ Pending", callback_data=f"owpending_{task_id}")])
     if int(q.from_user.id) == int(ADMIN_ID) and submission_status != "rewarded":
         buttons.append([InlineKeyboardButton("🧪 Admin Test Complete", callback_data=f"admtest_ow_{task_id}")])
     if submission_status == "rewarded":
-        text = text.replace("⏳ **Status:** In Progress — complete the task. Points will be added automatically after provider verification.", "✅ **Status:** Verified & Rewarded — Points have been added.")
+        text = text.replace("🇧🇩 **কাজটি যেভাবে সম্পূর্ণ করবেন:**\n1️⃣ নিচের **🚀 কাজ শুরু করুন** বাটনে চাপ দিন।\n2️⃣ Provider-এর দেওয়া কাজটি পুরোপুরি সম্পূর্ণ করুন।\n3️⃣ কাজ শেষ হলে Provider আপনার completion verify করবে।\n4️⃣ Verify হলে আপনার Points স্বয়ংক্রিয়ভাবে যোগ হবে।\n\n⚠️ শুধু বাটনে চাপ দিলেই Points যোগ হবে না।", "🇧🇩 **কাজটি সম্পূর্ণ হয়েছে।**\n\n✅ Provider আপনার কাজ verify করেছে এবং Points যোগ করা হয়েছে।")
+        buttons = []
     buttons.append([InlineKeyboardButton("⬅️ Tasks", callback_data="tasks"), InlineKeyboardButton("🏠 Home", callback_data="home")])
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+
+async def offerwallme_pending_callback(update, context):
+    q = update.callback_query
+    if not q or not str(q.data).startswith("owpending_"):
+        return
+    await q.answer("এখনও Provider থেকে completion verification আসেনি।", show_alert=True)
 
 
 async def admin_test_cpalead_callback(update, context):
@@ -967,5 +976,5 @@ async def offerwallme_proof_message_handler(update, context):
     return False
 
 
-HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback,"rewards_tasks_callback":rewards_tasks_callback,"cpalead_tasks_callback":cpalead_tasks_callback,"cpalead_task_callback":cpalead_task_callback,"offerwallme_category_callback":offerwallme_category_callback,"offerwallme_task_callback":offerwallme_task_callback,"offerwallme_task_proof_callback":offerwallme_task_proof_callback,"admin_test_cpalead_callback":admin_test_cpalead_callback,"admin_test_offerwallme_callback":admin_test_offerwallme_callback}
-__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","rewards_tasks_callback","cpalead_tasks_callback","cpalead_task_callback","offerwallme_category_callback","offerwallme_task_callback","offerwallme_task_proof_callback","admin_test_cpalead_callback","admin_test_offerwallme_callback","offerwallme_proof_message_handler","HANDLER_FUNCTIONS","ensure_task_indexes"]
+HANDLER_FUNCTIONS={"tasks":tasks_page,"task_callback":task_callback,"task_complete_callback":task_complete_callback,"rewards_tasks_callback":rewards_tasks_callback,"cpalead_tasks_callback":cpalead_tasks_callback,"cpalead_task_callback":cpalead_task_callback,"offerwallme_category_callback":offerwallme_category_callback,"offerwallme_task_callback":offerwallme_task_callback,"offerwallme_pending_callback":offerwallme_pending_callback,"offerwallme_task_proof_callback":offerwallme_task_proof_callback,"admin_test_cpalead_callback":admin_test_cpalead_callback,"admin_test_offerwallme_callback":admin_test_offerwallme_callback}
+__all__=["register_task","get_tasks","get_task","set_task_enabled","delete_task","task_available","complete_task","complete_task_async","request_vip_task_review","approve_task_completion","reject_task_completion","tasks_menu","tasks_page","task_callback","task_complete_callback","rewards_tasks_callback","cpalead_tasks_callback","cpalead_task_callback","offerwallme_category_callback","offerwallme_task_callback","offerwallme_pending_callback","offerwallme_task_proof_callback","admin_test_cpalead_callback","admin_test_offerwallme_callback","offerwallme_proof_message_handler","HANDLER_FUNCTIONS","ensure_task_indexes"]

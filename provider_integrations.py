@@ -319,24 +319,37 @@ def _offerwallme_request(endpoint: str, user_id: int, *, method="GET", body=None
 
 
 def _offerwallme_list(payload):
-    """Extract provider items from common Offerwall.me response envelopes."""
+    """Extract Offerwall.me items from both legacy and current response envelopes."""
     if isinstance(payload, list):
-        return payload
+        return [x for x in payload if isinstance(x, dict)]
     if not isinstance(payload, dict):
         return []
-    data = payload.get("data")
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        for key in ("offers", "tasks", "shortlinks", "results", "items", "data"):
-            value = data.get(key)
-            if isinstance(value, list):
-                return value
-    for key in ("offers", "tasks", "shortlinks", "results", "items"):
-        value = payload.get(key)
+
+    # Different Offerwall.me deployments/envelopes may wrap the same inventory
+    # under data/result/response or under tasks/offers/items. Walk only the
+    # known collection keys so metadata dictionaries are never treated as tasks.
+    collection_keys = (
+        "tasks", "offers", "shortlinks", "results", "items", "records",
+        "campaigns", "inventory", "data", "result", "response",
+    )
+    seen = set()
+    def walk(value, depth=0):
+        if depth > 4 or id(value) in seen:
+            return []
         if isinstance(value, list):
-            return value
-    return []
+            return [x for x in value if isinstance(x, dict)]
+        if not isinstance(value, dict):
+            return []
+        seen.add(id(value))
+        for key in collection_keys:
+            if key not in value:
+                continue
+            found = walk(value.get(key), depth + 1)
+            if found:
+                return found
+        return []
+
+    return walk(payload)
 
 
 def _offerwallme_form_request(endpoint: str, params: Dict[str, Any]):
@@ -457,20 +470,46 @@ def get_offerwallme_tasks(user_id: int, force_refresh: bool = False):
     cached = None if force_refresh else _cache_get(cache_key)
     if cached is not None:
         return cached
-    payload = _offerwallme_request(
-        _env("OFFERWALLME_TASKS_API_URL", "https://offerwall.me/taskapi.php"),
-        user_id,
-    )
+    endpoint = _env("OFFERWALLME_TASKS_API_URL", "https://offerwall.me/taskapi.php")
+    payload = _offerwallme_request(endpoint, user_id)
+    raw_items = _offerwallme_list(payload)
+
+    # Some PHP installations accept the same credentials through POST rather
+    # than GET. If GET returned no usable inventory, retry as form-encoded POST.
+    # This is read-only and only runs when the first response produced no items.
+    if not raw_items:
+        try:
+            api_key, bearer = _offerwallme_credentials()
+            form = {
+                "api": api_key,
+                "id": str(user_id),
+                "ip": _offerwallme_public_ip(),
+                "token": bearer,
+                "country": _env("OFFERWALLME_COUNTRY", "BD").upper(),
+            }
+            post_payload = _offerwallme_form_request(endpoint, form)
+            raw_items = _offerwallme_list(post_payload)
+            if raw_items:
+                payload = post_payload
+        except Exception:
+            logger.exception("Offerwall.me task POST fallback failed | user=%s", user_id)
+
+    if not raw_items and isinstance(payload, dict):
+        logger.warning(
+            "Offerwall.me returned no task items | user=%s status=%r error=%r message=%r endpoint=%s",
+            user_id, payload.get("status"), payload.get("error"), payload.get("message"), endpoint,
+        )
+
     result = []
-    for raw in _offerwallme_list(payload):
+    for raw in raw_items:
         if not isinstance(raw, dict):
             continue
-        task_id = _first(raw, ("id", "task_id", "taskId"))
+        task_id = _first(raw, ("id", "task_id", "taskId", "taskid", "offer_id", "offerId", "campaign_id", "campaignId"))
         if not task_id:
             continue
         task_url = _first(
             raw,
-            ("url", "link", "task_url", "taskUrl", "tracking_url", "click_url", "offer_url"),
+            ("url", "link", "task_url", "taskUrl", "tracking_url", "click_url", "clickUrl", "offer_url", "offerUrl", "task_link", "taskLink"),
             "",
         )
         reward = _first(

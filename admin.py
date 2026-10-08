@@ -1,8 +1,6 @@
 import time
 import logging
 import html
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from telegram import (
     Update,
@@ -13,12 +11,6 @@ from telegram import (
 from telegram.ext import ContextTypes
 
 from config import ADMIN_ID
-from config import (
-    JOIN_BONUS_ENABLED, JOIN_BONUS_DURATION_SECONDS,
-    JOIN_BONUS_FIRST_TIER_COUNT, JOIN_BONUS_FIRST_TIER_BDT,
-    JOIN_BONUS_SECOND_TIER_COUNT, JOIN_BONUS_SECOND_TIER_BDT,
-    JOIN_BONUS_THIRD_TIER_COUNT, JOIN_BONUS_THIRD_TIER_BDT,
-)
 
 from provider_integrations import (
     get_provider_offers,
@@ -67,9 +59,6 @@ from database import (
     get_withdrawal_settings,
     points_to_bdt,
     leaderboard,
-    get_join_bonus_control,
-    set_join_bonus_control,
-    clear_join_bonus_schedule,
 )
 
 
@@ -2472,13 +2461,6 @@ async def admin_settings(
 
                 [
                     InlineKeyboardButton(
-                        "🎁 Joining Reward Settings",
-                        callback_data="admin_join_bonus_settings",
-                    )
-                ],
-
-                [
-                    InlineKeyboardButton(
                         "💸 Withdrawal Settings",
                         callback_data="admin_withdraw_settings",
                     )
@@ -2496,93 +2478,6 @@ async def admin_settings(
 
         parse_mode="Markdown",
     )
-
-# ==================================================
-# JOINING REWARD / FLASH JOIN BONUS SETTINGS
-# ==================================================
-
-_DHAKA_TZ = ZoneInfo("Asia/Dhaka")
-
-
-def _join_bonus_local(ts):
-    if ts is None:
-        return "Not set"
-    try:
-        return datetime.fromtimestamp(int(ts), tz=_DHAKA_TZ).strftime("%Y-%m-%d %I:%M %p")
-    except Exception:
-        return "Invalid"
-
-
-async def admin_join_bonus_settings(update, context):
-    query = update.callback_query
-    if not query or not admin_only(query.from_user.id):
-        if query:
-            await query.answer("🚫 Admin only.", show_alert=True)
-        return
-    await query.answer()
-    control = get_join_bonus_control()
-    enabled = bool(control.get("enabled", JOIN_BONUS_ENABLED))
-    start_at = control.get("start_at")
-    end_at = control.get("end_at")
-    schedule = (
-        f"🕐 Start: {_join_bonus_local(start_at)}\n"
-        f"🛑 End: {_join_bonus_local(end_at)}"
-        if start_at is not None or end_at is not None
-        else "🕐 Schedule: Default 24-hour event"
-    )
-    await query.edit_message_text(
-        "🎁 **JOINING REWARD SETTINGS**\n\n"
-        f"Status: **{'🟢 ON' if enabled else '🔴 OFF'}**\n"
-        f"{schedule}\n\n"
-        "💰 Tiers (unchanged):\n"
-        f"🥇 First {JOIN_BONUS_FIRST_TIER_COUNT} → ৳{JOIN_BONUS_FIRST_TIER_BDT}\n"
-        f"🥈 Next {JOIN_BONUS_SECOND_TIER_COUNT} → ৳{JOIN_BONUS_SECOND_TIER_BDT}\n"
-        f"🥉 Next {JOIN_BONUS_THIRD_TIER_COUNT} → ৳{JOIN_BONUS_THIRD_TIER_BDT}\n\n"
-        "Set a start/end time to control exactly when the joining reward is available.\n"
-        "Times use **Bangladesh time (Asia/Dhaka)**.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢/🔴 Toggle ON/OFF", callback_data="admin_join_bonus_toggle")],
-            [InlineKeyboardButton("🕐 Set ON/OFF Time", callback_data="admin_join_bonus_schedule")],
-            [InlineKeyboardButton("♻️ Clear Time (Use Default 24h)", callback_data="admin_join_bonus_clear_schedule")],
-            [InlineKeyboardButton("🔙 Bot Settings", callback_data="admin_settings")],
-        ]),
-        parse_mode="Markdown",
-    )
-
-
-async def admin_join_bonus_toggle(update, context):
-    query = update.callback_query
-    await query.answer()
-    current = get_join_bonus_control()
-    enabled = bool(current.get("enabled", JOIN_BONUS_ENABLED))
-    set_join_bonus_control(enabled=not enabled)
-    await admin_join_bonus_settings(update, context)
-
-
-async def admin_join_bonus_schedule(update, context):
-    query = update.callback_query
-    await query.answer()
-    context.user_data["admin_action"] = "set_join_bonus_schedule"
-    await query.edit_message_text(
-        "🕐 **SET JOINING REWARD TIME**\n\n"
-        "Send Bangladesh time in this format:\n"
-        "`YYYY-MM-DD HH:MM | YYYY-MM-DD HH:MM`\n\n"
-        "Example:\n"
-        "`2026-10-09 08:00 | 2026-10-10 08:00`\n\n"
-        "First time = ON/start\n"
-        "Second time = OFF/end\n"
-        "The reward tiers and claim rules stay unchanged.",
-        reply_markup=admin_back(),
-        parse_mode="Markdown",
-    )
-
-
-async def admin_join_bonus_clear_schedule(update, context):
-    query = update.callback_query
-    await query.answer()
-    clear_join_bonus_schedule()
-    await admin_join_bonus_settings(update, context)
-
 
 # ==================================================
 # WITHDRAWAL SETTINGS
@@ -3417,39 +3312,6 @@ async def admin_text_handler(
 
         return True
         # ==================================================
-    # JOINING REWARD SCHEDULE
-    # ==================================================
-
-    if action == "set_join_bonus_schedule":
-        try:
-            parts = [part.strip() for part in text.split("|", 1)]
-            if len(parts) != 2:
-                raise ValueError
-            start_dt = datetime.strptime(parts[0], "%Y-%m-%d %H:%M").replace(tzinfo=_DHAKA_TZ)
-            end_dt = datetime.strptime(parts[1], "%Y-%m-%d %H:%M").replace(tzinfo=_DHAKA_TZ)
-            start_ts = int(start_dt.timestamp())
-            end_ts = int(end_dt.timestamp())
-            if end_ts <= start_ts:
-                raise ValueError
-        except ValueError:
-            await update.message.reply_text(
-                "❌ Invalid time. Use: YYYY-MM-DD HH:MM | YYYY-MM-DD HH:MM\n\nExample: 2026-10-09 08:00 | 2026-10-10 08:00",
-                reply_markup=admin_back(),
-            )
-            return True
-
-        set_join_bonus_control(start_at=start_ts, end_at=end_ts)
-        context.user_data.clear()
-        await update.message.reply_text(
-            "✅ Joining Reward schedule saved.\n\n"
-            f"🟢 ON: {_join_bonus_local(start_ts)}\n"
-            f"🔴 OFF: {_join_bonus_local(end_ts)}\n\n"
-            "Other Joining Reward settings remain unchanged.",
-            reply_markup=admin_back(),
-        )
-        return True
-
-    # ==================================================
     # WITHDRAWAL SETTINGS
     # ==================================================
 
@@ -3983,10 +3845,6 @@ async def admin_callback(
         "admin_add_ref_milestone": admin_add_ref_milestone,
         "admin_del_ref_milestone": admin_del_ref_milestone,
         "admin_settings": admin_settings,
-        "admin_join_bonus_settings": admin_join_bonus_settings,
-        "admin_join_bonus_toggle": admin_join_bonus_toggle,
-        "admin_join_bonus_schedule": admin_join_bonus_schedule,
-        "admin_join_bonus_clear_schedule": admin_join_bonus_clear_schedule,
         "admin_withdraw_settings": admin_withdraw_settings,
         "admin_set_withdraw_rate": admin_set_withdraw_rate,
         "admin_set_withdraw_min": admin_set_withdraw_min,
