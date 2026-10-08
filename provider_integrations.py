@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 from database import db, add_balance, add_activity, get_user, record_transaction, remove_balance, get_membership_multiplier
 from config import ADMIN_ID
@@ -103,14 +104,37 @@ def _json_request(url: str, *, method="GET", params=None, headers=None,
         headers.setdefault("Content-Type", "application/json")
 
     req = Request(url, data=data, headers=headers, method=method.upper())
-    with urlopen(req, timeout=timeout) as response:
-        raw = response.read().decode("utf-8", errors="replace")
-        if not raw:
-            return {}
+    try:
+        with urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            if not raw:
+                return {}
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return raw
+    except HTTPError as exc:
+        # Provider/CDN may reject Render's IP with 403. Do not let that
+        # exception abort Task Center refresh; return a diagnostic payload so
+        # the caller can try its fallback request and keep the UI usable.
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return raw
+            body_text = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            body_text = ""
+        logger.warning(
+            "HTTP error from provider endpoint | status=%s method=%s url=%s body=%s",
+            getattr(exc, "code", "?"), method.upper(), url, body_text,
+        )
+        return {"status": 0, "error": f"http_{getattr(exc, 'code', 'error')}", "http_status": getattr(exc, "code", None)}
+    except URLError as exc:
+        logger.warning(
+            "Provider endpoint connection failed | method=%s url=%s error=%s",
+            method.upper(), url, exc,
+        )
+        return {"status": 0, "error": "connection_error", "detail": str(exc)}
+    except TimeoutError:
+        logger.warning("Provider endpoint timed out | method=%s url=%s", method.upper(), url)
+        return {"status": 0, "error": "timeout"}
 
 
 
@@ -365,14 +389,24 @@ def _offerwallme_form_request(endpoint: str, params: Dict[str, Any]):
     }
     data = urlencode({str(k): str(v) for k, v in (params or {}).items() if v is not None}).encode("utf-8")
     req = Request(endpoint, data=data, headers=headers, method="POST")
-    with urlopen(req, timeout=15) as response:
-        raw = response.read().decode("utf-8", errors="replace")
-        if not raw:
-            return {}
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return raw
+    try:
+        with urlopen(req, timeout=15) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            if not raw:
+                return {}
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return raw
+    except HTTPError as exc:
+        logger.warning(
+            "Offerwall.me form POST rejected | status=%s endpoint=%s",
+            getattr(exc, "code", "?"), endpoint,
+        )
+        return {"status": 0, "error": f"http_{getattr(exc, 'code', 'error')}", "http_status": getattr(exc, "code", None)}
+    except (URLError, TimeoutError) as exc:
+        logger.warning("Offerwall.me form POST failed | endpoint=%s error=%s", endpoint, exc)
+        return {"status": 0, "error": "post_request_failed"}
 
 
 def get_offerwallme_offers(user_id: int, force_refresh: bool = False):
