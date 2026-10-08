@@ -225,10 +225,14 @@ def provider_postback(provider):
     payload.update(request.form.to_dict(flat=True))
 
     result = process_postback(provider, payload)
-    # Provider postbacks should receive HTTP 200 even when the conversion is
-    # rejected; the JSON body still reports the exact reason. This prevents
-    # unnecessary provider retries for invalid/duplicate callbacks.
-    return jsonify(result), 200
+    # Accepted conversions, idempotent duplicates and known reversals are
+    # acknowledged. Rejected callbacks get 4xx so a provider can retry a
+    # transient delivery problem instead of silently dropping a conversion.
+    if isinstance(result, dict) and result.get("ok"):
+        return jsonify(result), 200
+    error = str((result or {}).get("error") or "postback_rejected") if isinstance(result, dict) else "postback_rejected"
+    status = 403 if "signature" in error or "password" in error else 400
+    return jsonify(result), status
 
 
 def run_web_server():

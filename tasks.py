@@ -580,6 +580,19 @@ async def _refresh_tasks_in_background(query, user_id: int):
             await query.edit_message_text(text, reply_markup=tasks_menu(user_id, offerwall_tasks=offerwall_tasks), parse_mode="Markdown")
     except Exception:
         logger.exception("Background task refresh failed | user=%s", user_id)
+        if query and query.message:
+            try:
+                db_user = get_user(user_id, create=False)
+                if db_user and not db_user.get("banned") and not db_user.get("blacklisted"):
+                    await query.edit_message_text(
+                        "🎯 **TASK CENTER**\n\n"
+                        "No live provider tasks are available right now.\n"
+                        "You can still use the task categories below; provider inventory refreshes automatically.",
+                        reply_markup=tasks_menu(user_id),
+                        parse_mode="Markdown",
+                    )
+            except Exception:
+                logger.exception("Could not update Task Center after provider refresh failure | user=%s", user_id)
     finally:
         _BACKGROUND_REFRESHING.discard(key)
 
@@ -618,7 +631,11 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     normal=[t for t in task_list if t.get("audience","normal") in {"normal","both"}]
     vip=[t for t in task_list if t.get("audience","normal") in {"vip","both"}]
     if not task_list and not offerwall_tasks:
-        text=("📋 **TASK CENTER**\n\n" + ("⏳ Loading latest tasks...\n\nPlease wait a moment; the task list is being refreshed." if not provider_cache_fresh("offerwallme_tasks", user.id) else "No tasks are available for your membership right now."))
+        text = (
+            "🎯 **TASK CENTER**\n\n"
+            "No live provider tasks are available right now.\n"
+            "Provider inventory refreshes automatically. Try again in a moment."
+        )
     else:
         text = "🎯 **TASK CENTER**\n\nSelect a task category below."
     markup = tasks_menu(user.id, offerwall_tasks=offerwall_tasks)
@@ -713,7 +730,11 @@ async def rewards_tasks_callback(update, context):
     category_order = ["easy", "app", "video", "survey", "other"]
     buttons = []
     for category in category_order:
-        category_tasks = [t for t in tasks if _offerwall_task_category(t) == category]
+        category_tasks = [
+            t for t in tasks
+            if _offerwall_task_category(t) == category
+            and not _provider_task_hidden("offerwallme", user_id, str(t.get("id") or ""))
+        ]
         label = _offerwall_task_category_label(category)
         buttons.append([InlineKeyboardButton(
             f"{label} ({len(category_tasks)})" if category_tasks else label,

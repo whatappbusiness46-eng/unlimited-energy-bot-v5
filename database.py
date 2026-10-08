@@ -1900,6 +1900,39 @@ def banned_users():
 def get_active_campaign_settings():
     return bot_settings.find_one({"_id": "active_campaign"}) or {}
 
+
+def get_join_bonus_control():
+    """Return admin-controlled join bonus switch/schedule.
+
+    The document is optional so older deployments keep their existing
+    environment-based behaviour until an admin changes the setting.
+    Times are stored as Unix timestamps (UTC-safe).
+    """
+    return bot_settings.find_one({"_id": "join_bonus_control"}) or {}
+
+
+def set_join_bonus_control(enabled=None, start_at=None, end_at=None):
+    update = {"updated_at": _campaign_now()}
+    if enabled is not None:
+        update["enabled"] = bool(enabled)
+    if start_at is not None:
+        update["start_at"] = int(start_at)
+    if end_at is not None:
+        update["end_at"] = int(end_at)
+    return bot_settings.update_one(
+        {"_id": "join_bonus_control"},
+        {"$set": update},
+        upsert=True,
+    )
+
+
+def clear_join_bonus_schedule():
+    return bot_settings.update_one(
+        {"_id": "join_bonus_control"},
+        {"$unset": {"start_at": "", "end_at": ""}, "$set": {"updated_at": _campaign_now()}},
+        upsert=True,
+    )
+
 def _campaign_now():
     return int(time.time())
 
@@ -1915,14 +1948,34 @@ def start_or_get_join_bonus_campaign(duration_seconds=86400, start_at=None):
     return get_active_campaign_settings()
 
 def claim_join_bonus(user_id, tiers, duration_seconds=86400, enabled=True, campaign_start_at=None):
+    control = get_join_bonus_control()
+    if "enabled" in control:
+        enabled = bool(control.get("enabled"))
     if not enabled:
         return None
+
     user_id = int(user_id)
     now = _campaign_now()
+
+    # Admin schedule, when configured, is the authoritative ON/OFF window.
+    # This does not change the existing tier counts or rewards.
+    scheduled_start = control.get("start_at")
+    scheduled_end = control.get("end_at")
+    if scheduled_start is not None and now < int(scheduled_start):
+        return None
+    if scheduled_end is not None and now > int(scheduled_end):
+        return None
+
     campaign = get_active_campaign_settings()
     if not campaign.get("started_at"):
-        campaign = start_or_get_join_bonus_campaign(duration_seconds, campaign_start_at)
-    if now > int(campaign.get("ends_at", 0)):
+        campaign = start_or_get_join_bonus_campaign(
+            duration_seconds,
+            campaign_start_at if scheduled_start is None else int(scheduled_start),
+        )
+
+    # Keep the old 24-hour campaign behaviour when no admin schedule exists.
+    # If an admin schedule exists, its end time controls availability.
+    if scheduled_end is None and now > int(campaign.get("ends_at", 0)):
         return None
     if join_bonus_claims.find_one({"user_id": user_id}):
         return None

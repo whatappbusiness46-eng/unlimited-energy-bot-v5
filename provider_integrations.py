@@ -878,6 +878,11 @@ def get_provider_offers(user_id: int, providers: Optional[Iterable[str]] = None,
     # while the UI still says "No live offers".
     if "cpagrip" in providers:
         _cache_set(("cpagrip_offers", int(user_id)), result)
+    elif "cpalead" in providers:
+        # The public Offers page historically used the cpagrip cache key.
+        # Keep that compatibility key populated even when CPAlead is the only
+        # enabled provider, so the UI does not repeatedly refresh forever.
+        _cache_set(("cpagrip_offers", int(user_id)), result)
     return _cache_set(cache_key, result)
 
 
@@ -993,9 +998,9 @@ def _offerwallme_signature_valid(params: Dict[str, Any]) -> bool:
     if not secret:
         return False
 
-    sub_id = params.get("subId")
-    trans_id = params.get("transId")
-    reward = params.get("reward")
+    sub_id = params.get("subId") or params.get("subid") or params.get("sub_id") or params.get("user_id")
+    trans_id = params.get("transId") or params.get("transid") or params.get("transaction_id") or params.get("transactionId")
+    reward = params.get("reward") if params.get("reward") not in (None, "") else params.get("payout", params.get("amount"))
     supplied = str(params.get("signature") or "").strip().lower()
     if sub_id in (None, "") or trans_id in (None, "") or reward in (None, "") or not supplied:
         return False
@@ -1011,11 +1016,12 @@ def _process_offerwallme_postback(params: Dict[str, Any]):
     if not _env("OFFERWALLME_POSTBACK_SECRET"):
         return {"ok": False, "error": "missing_postback_secret"}
 
-    # Offerwall.me uses these exact parameter names.
-    user_raw = params.get("subId")
-    trans_id = str(params.get("transId") or "").strip()
-    reward_raw = params.get("reward")
-    status = str(params.get("status") or "").strip()
+    # Accept the documented names plus common gateway aliases; signature
+    # verification remains mandatory before any credit.
+    user_raw = params.get("subId") or params.get("subid") or params.get("sub_id") or params.get("user_id")
+    trans_id = str(params.get("transId") or params.get("transid") or params.get("transaction_id") or params.get("transactionId") or "").strip()
+    reward_raw = params.get("reward") if params.get("reward") not in (None, "") else params.get("payout", params.get("amount"))
+    status = str(params.get("status") or params.get("event_status") or "").strip()
 
     if user_raw in (None, ""):
         return {"ok": False, "error": "missing_user"}
