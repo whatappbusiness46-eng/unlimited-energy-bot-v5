@@ -13,9 +13,9 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
 
 from database import db, add_balance, add_activity, get_user, record_transaction, remove_balance, get_membership_multiplier
+from config import ADMIN_ID
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ provider_offers = db["provider_offers"]
 provider_events = db["provider_events"]
 provider_disabled_offers = db["provider_disabled_offers"]
 offerwall_task_proofs = db["offerwall_task_proofs"]
+provider_pending = db["provider_pending"]
 
 try:
     provider_offers.create_index([("provider", 1), ("offer_id", 1)],
@@ -68,6 +69,8 @@ try:
                                           unique=True, name="provider_disabled_offer_unique")
     offerwall_task_proofs.create_index([("proof_id", 1)], unique=True, name="offerwall_task_proof_unique")
     offerwall_task_proofs.create_index([("user_id", 1), ("task_id", 1), ("created_at", -1)], name="offerwall_task_proof_user_task")
+    provider_pending.create_index([("provider", 1), ("user_id", 1), ("offer_id", 1)], name="provider_pending_lookup")
+    provider_pending.create_index([("provider", 1), ("user_id", 1), ("created_at", -1)], name="provider_pending_user_time")
     db["offerwall_task_submissions"].create_index([("user_id", 1), ("task_id", 1)], unique=True, name="offerwall_task_submission_unique")
     db["offerwall_task_submissions"].create_index([("user_id", 1), ("status", 1), ("submitted_at", -1)], name="offerwall_task_submission_status")
 except Exception:
@@ -100,46 +103,14 @@ def _json_request(url: str, *, method="GET", params=None, headers=None,
         headers.setdefault("Content-Type", "application/json")
 
     req = Request(url, data=data, headers=headers, method=method.upper())
-    try:
-        with urlopen(req, timeout=timeout) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-            if not raw:
-                return {}
-            try:
-                return json.loads(raw)
-            except json.JSONDecodeError:
-                return raw
-    except HTTPError as exc:
-        # Keep provider rejections as structured results so background refreshes
-        # do not crash with a traceback. Never log the full URL: query strings
-        # can contain publisher API keys and bearer tokens.
+    with urlopen(req, timeout=timeout) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+        if not raw:
+            return {}
         try:
-            raw = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            raw = ""
-        try:
-            detail = json.loads(raw) if raw else {}
+            return json.loads(raw)
         except json.JSONDecodeError:
-            detail = {"message": raw[:500]} if raw else {}
-        parsed = urlparse(url)
-        safe_endpoint = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-        provider_code = str(detail.get("code", "") if isinstance(detail, dict) else "")
-        provider_message = str(detail.get("message", "") if isinstance(detail, dict) else "")
-        logger.warning(
-            "Provider endpoint rejected request | status=%s method=%s endpoint=%s code=%s message=%s",
-            exc.code, method.upper(), safe_endpoint, provider_code[:100], provider_message[:300],
-        )
-        return {
-            "status": int(exc.code),
-            "error": f"http_{int(exc.code)}",
-            "code": provider_code,
-            "message": provider_message,
-        }
-    except URLError as exc:
-        parsed = urlparse(url)
-        safe_endpoint = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-        logger.warning("Provider endpoint connection failed | method=%s endpoint=%s reason=%s", method.upper(), safe_endpoint, str(getattr(exc, "reason", exc))[:300])
-        return {"status": 0, "error": "provider_connection_error", "message": str(getattr(exc, "reason", exc))[:300]}
+            return raw
 
 
 
@@ -224,6 +195,82 @@ def _mark_offerwall_submission_from_postback(user_id: int, reward_raw: Any, even
         {"$set": {"status": "rewarded", "provider_event_id": str(event_id), "reward_points": int(points), "approved_at": int(time.time())}},
     )
     return str(target.get("task_id"))
+
+
+def _provider_task_hidden(provider: str, user_id: int, offer_id: str) -> bool:
+    """Return True once a provider task has been started or verified for this user.
+
+    Provider tasks are one-time from the member UI: after the first tap they are
+    removed from the task list, and after verification they stay removed.
+    """
+    try:
+        doc = provider_pending.find_one({
+            "provider": str(provider),
+            "user_id": int(user_id),
+            "offer_id": str(offer_id or ""),
+            "status": {"$in": ["started", "pending", "rewarded"]},
+        }, {"_id": 1})
+        return bool(doc)
+    except Exception:
+        logger.exception("Provider task hidden check failed | provider=%s user=%s offer=%s", provider, user_id, offer_id)
+        return False
+
+
+def _record_provider_pending(provider: str, user_id: int, offer_id: str = "", title: str = "", reward_points: int = 0, reward_raw: Any = ""):
+    """Record that a member has started a provider task and is awaiting S2S verification."""
+    try:
+        now = int(time.time())
+        provider_pending.update_one(
+            {"provider": str(provider), "user_id": int(user_id), "offer_id": str(offer_id or "")},
+            {"$set": {
+                "provider": str(provider), "user_id": int(user_id), "offer_id": str(offer_id or ""),
+                "title": str(title or "")[:200], "reward_points": int(reward_points or 0),
+                "reward_raw": str(reward_raw), "status": "started", "updated_at": now,
+            }, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+        )
+    except Exception:
+        logger.exception("Provider pending record failed | provider=%s user=%s offer=%s", provider, user_id, offer_id)
+
+
+def _mark_provider_pending_rewarded(provider: str, user_id: int, event_id: str, points: int, offer_id: str = ""):
+    """Mark the matching pending provider task as verified/rewarded."""
+    try:
+        q = {"provider": str(provider), "user_id": int(user_id), "status": {"$in": ["started", "pending"]}}
+        if offer_id:
+            q["offer_id"] = str(offer_id)
+        result = provider_pending.update_one(
+            q, {"$set": {"status": "rewarded", "provider_event_id": str(event_id), "credited_points": int(points), "verified_at": int(time.time())}}
+        )
+        return bool(result.modified_count)
+    except Exception:
+        logger.exception("Provider pending reward update failed | provider=%s user=%s", provider, user_id)
+        return False
+
+
+def _notify_user_verified(user_id: int, provider: str, points: int, title: str = ""):
+    """Send a verified-reward notification using the configured BOT_TOKEN only."""
+    token = _env("BOT_TOKEN")
+    if not token:
+        logger.warning("BOT_TOKEN unavailable for reward notification | user=%s", user_id)
+        return False
+    provider_label = {"cpalead": "CPAlead", "cpagrip": "CPAGrip", "offerwallme": "Offerwall.me"}.get(str(provider), str(provider))
+    safe_title = str(title or "Task").replace("<", "&lt;").replace(">", "&gt;")[:120]
+    text = (
+        "🎉 <b>Task Verified!</b>\n\n"
+        f"🎯 {safe_title}\n"
+        f"💰 <b>+{int(points)} Points</b> added to your balance.\n"
+        f"✅ Verified by {provider_label}."
+    )
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = urlencode({"chat_id": str(int(user_id)), "text": text, "parse_mode": "HTML"}).encode("utf-8")
+        req = Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "UnlimitedEnergyBot/RewardNotify"}, method="POST")
+        with urlopen(req, timeout=5) as response:
+            return 200 <= int(getattr(response, "status", 200)) < 300
+    except Exception:
+        logger.exception("Reward notification failed | provider=%s user=%s", provider, user_id)
+        return False
 
 
 def _offerwallme_credentials():
@@ -359,6 +406,50 @@ def sync_offerwallme_offers(user_id: int) -> int:
     return len(offers)
 
 
+
+def _offerwallme_task_tracking_url(task_url: str, user_id: int) -> str:
+    """Prepare an Offerwall.me task URL without breaking provider deep-links.
+
+    The task API already receives the member ID via ``id``. Some returned task
+    URLs are third-party deep-links (for example Telegram Mini App URLs).
+    Appending an unrelated ``subId`` parameter to those links can change or
+    break the provider's own start/deep-link tracking. Only fill an explicit
+    user-ID placeholder or an existing ``subid`` field. For a first-party
+    Offerwall.me URL, add ``subId`` when the provider did not supply one.
+    """
+    url = str(task_url or "").strip()
+    if not url:
+        return url
+    uid = str(int(user_id))
+    for token in ("{subId}", "{subid}", "{user_id}", "{uid}", "%%SUBID%%", "%%USER_ID%%"):
+        url = url.replace(token, uid)
+    try:
+        parts = urlsplit(url)
+        if not parts.scheme or not parts.netloc:
+            return url
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        found = False
+        rebuilt = []
+        for key, value in query:
+            if key.lower() == "subid":
+                if not found:
+                    rebuilt.append((key, uid))
+                    found = True
+                continue
+            rebuilt.append((key, value))
+        if found:
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(rebuilt), parts.fragment))
+
+        host = parts.netloc.lower().split(":", 1)[0]
+        if host == "offerwall.me" or host.endswith(".offerwall.me"):
+            rebuilt.append(("subId", uid))
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(rebuilt), parts.fragment))
+
+        # Third-party/deep-link URL: keep it exactly as returned by the provider.
+        return url
+    except Exception:
+        return url
+
 def get_offerwallme_tasks(user_id: int, force_refresh: bool = False):
     if not _enabled("offerwallme"):
         return []
@@ -370,17 +461,6 @@ def get_offerwallme_tasks(user_id: int, force_refresh: bool = False):
         _env("OFFERWALLME_TASKS_API_URL", "https://offerwall.me/taskapi.php"),
         user_id,
     )
-    if isinstance(payload, dict) and (payload.get("status") == 403 or payload.get("error") == "http_403"):
-        code = str(payload.get("code") or "")
-        message = str(payload.get("message") or "")
-        if code == "INVALID_PUBLISHER_SIGNATURE":
-            logger.error(
-                "Offerwall.me task API requires a publisher-signed user identity; configure the official signed placement/launch flow. No tasks can be listed until provider-side identity verification succeeds."
-            )
-        else:
-            logger.warning("Offerwall.me task API rejected the request with HTTP 403; check publisher placement/API access.")
-        _cache_set(cache_key, [])
-        return []
     result = []
     for raw in _offerwallme_list(payload):
         if not isinstance(raw, dict):
@@ -416,7 +496,7 @@ def get_offerwallme_tasks(user_id: int, force_refresh: bool = False):
                 proof_text=str(_first(raw, ("proof_text", "proofText", "proof_instruction", "proofInstruction"), "Submit the required proof") or "Submit the required proof"),
                 id=str(task_id),
                 reward=reward,
-                url=str(task_url or ""),
+                url=_offerwallme_task_tracking_url(task_url, user_id),
                 offer_type=offer_type,
                 platform=platform,
             )
@@ -694,8 +774,30 @@ def _sync_cpa_lead_bd_offers(user_id: int):
     url = "https://www.cpalead.com/api/offers"
     fields = "id,title,description,long_description,link,preview_link,amount,payout_currency,payout_type,countries,payouts_per_country,events,conversion_mode,verification_method,device,offer_rank"
     try:
-        payload = _json_request(url, params={"id": publisher_id, "country": "BD", "limit": limit, "fields": fields}, timeout=12)
-        raw = payload if isinstance(payload, list) else (payload.get("offers") or payload.get("data") or payload.get("results") or []) if isinstance(payload, dict) else []
+        # CPAlead's current Publisher Offers API supports country/device/type filters.
+        # Keep the tracking link returned by CPAlead; only add our Telegram subid later.
+        payload = _json_request(
+            url,
+            params={
+                "id": publisher_id,
+                "country": "BD",
+                # Do not use device=user here because the request originates
+                # from the Render server, not the Telegram user's device.
+                # Fetch all device types and let CPAlead's returned tracking
+                # link perform the correct offer targeting.
+                "type": "cpa,cpi,cpe",
+                "limit": limit,
+                "fields": fields,
+            },
+            timeout=12,
+        )
+        raw = []
+        if isinstance(payload, list):
+            raw = payload
+        elif isinstance(payload, dict):
+            raw = payload.get("offers") or payload.get("data") or payload.get("results") or []
+            if isinstance(raw, dict):
+                raw = raw.get("offers") or raw.get("data") or raw.get("results") or []
         out = []
         for item in raw:
             if not isinstance(item, dict):
@@ -705,11 +807,16 @@ def _sync_cpa_lead_bd_offers(user_id: int):
             if not oid or not link:
                 continue
             payout = item.get("amount", 0)
-            # Country-specific payout takes precedence when supplied.
-            for row in (item.get("payouts_per_country") or []):
-                if isinstance(row, dict) and str(row.get("country") or row.get("country_iso") or "").upper() == "BD":
-                    payout = row.get("amount", payout)
-                    break
+            # CPAlead currently returns payouts_per_country as a BD-keyed map,
+            # but older responses may return a list of country rows. Support both.
+            country_payouts = item.get("payouts_per_country") or {}
+            if isinstance(country_payouts, dict):
+                payout = country_payouts.get("BD", country_payouts.get("bd", payout))
+            elif isinstance(country_payouts, list):
+                for row in country_payouts:
+                    if isinstance(row, dict) and str(row.get("country") or row.get("country_iso") or "").upper() == "BD":
+                        payout = row.get("amount", payout)
+                        break
             doc = {
                 "provider": "cpalead",
                 "offer_id": oid,
@@ -764,7 +871,19 @@ def get_provider_offers(user_id: int, providers: Optional[Iterable[str]] = None,
             _sync_cpa_lead_bd_offers(user_id)
     disabled = {str(x["offer_id"]) for x in provider_disabled_offers.find({"provider": {"$in": providers}}, {"offer_id": 1})}
     docs = provider_offers.find({"provider": {"$in": providers}}, {"_id": 0}).sort("updated_at", -1).limit(100)
-    return _cache_set(cache_key, [dict(x) for x in docs if str(x.get("offer_id")) not in disabled])
+    result = [dict(x) for x in docs if str(x.get("offer_id")) not in disabled]
+    # The public Offers page reads its short-lived cache through
+    # get_cached_provider_offers(). Keep that cache populated after a live
+    # provider sync; otherwise the provider can return offers successfully
+    # while the UI still says "No live offers".
+    if "cpagrip" in providers:
+        _cache_set(("cpagrip_offers", int(user_id)), result)
+    elif "cpalead" in providers:
+        # The public Offers page historically used the cpagrip cache key.
+        # Keep that compatibility key populated even when CPAlead is the only
+        # enabled provider, so the UI does not repeatedly refresh forever.
+        _cache_set(("cpagrip_offers", int(user_id)), result)
+    return _cache_set(cache_key, result)
 
 
 def set_provider_offer_enabled(provider: str, offer_id: str, enabled: bool):
@@ -879,9 +998,9 @@ def _offerwallme_signature_valid(params: Dict[str, Any]) -> bool:
     if not secret:
         return False
 
-    sub_id = params.get("subId")
-    trans_id = params.get("transId")
-    reward = params.get("reward")
+    sub_id = params.get("subId") or params.get("subid") or params.get("sub_id") or params.get("user_id")
+    trans_id = params.get("transId") or params.get("transid") or params.get("transaction_id") or params.get("transactionId")
+    reward = params.get("reward") if params.get("reward") not in (None, "") else params.get("payout", params.get("amount"))
     supplied = str(params.get("signature") or "").strip().lower()
     if sub_id in (None, "") or trans_id in (None, "") or reward in (None, "") or not supplied:
         return False
@@ -897,11 +1016,12 @@ def _process_offerwallme_postback(params: Dict[str, Any]):
     if not _env("OFFERWALLME_POSTBACK_SECRET"):
         return {"ok": False, "error": "missing_postback_secret"}
 
-    # Offerwall.me uses these exact parameter names.
-    user_raw = params.get("subId")
-    trans_id = str(params.get("transId") or "").strip()
-    reward_raw = params.get("reward")
-    status = str(params.get("status") or "").strip()
+    # Accept the documented names plus common gateway aliases; signature
+    # verification remains mandatory before any credit.
+    user_raw = params.get("subId") or params.get("subid") or params.get("sub_id") or params.get("user_id")
+    trans_id = str(params.get("transId") or params.get("transid") or params.get("transaction_id") or params.get("transactionId") or "").strip()
+    reward_raw = params.get("reward") if params.get("reward") not in (None, "") else params.get("payout", params.get("amount"))
+    status = str(params.get("status") or params.get("event_status") or "").strip()
 
     if user_raw in (None, ""):
         return {"ok": False, "error": "missing_user"}
@@ -986,6 +1106,9 @@ def _process_offerwallme_postback(params: Dict[str, Any]):
     except Exception:
         logger.exception("Offerwall.me activity log failed | user=%s", user_id)
     matched_task_id = _mark_offerwall_submission_from_postback(user_id, reward_raw, event_id, points, params.get("offer_type"), params.get("offer_name"))
+    offer_title = str(params.get("offer_name") or params.get("offer_type") or "Rewards Task")
+    _mark_provider_pending_rewarded("offerwallme", user_id, event_id, points, str(params.get("offer_id") or params.get("offerId") or ""))
+    _notify_user_verified(user_id, "offerwallme", points, offer_title)
 
     return {"ok": True, "message": "credited", "provider": "offerwallme", "event_id": event_id, "user_id": user_id, "points": points, **({"task_id": matched_task_id} if matched_task_id else {})}
 
@@ -1054,6 +1177,8 @@ def process_postback(provider: str, params: Dict[str, Any]):
             add_activity(user_id,"🇧🇩 CPAlead task conversion",points)
         except Exception:
             logger.exception("CPAlead transaction/activity failed | event=%s",event_id)
+        _mark_provider_pending_rewarded("cpalead", user_id, event_id, points, offer_id)
+        _notify_user_verified(user_id, "cpalead", points, offer_title)
         return {"ok":True,"message":"credited","provider":"cpalead","event_id":event_id,"user_id":user_id,"points":points}
     if provider != "cpagrip" or not _enabled("cpagrip"):
         return {"ok": False, "error": "provider_disabled"}
@@ -1146,10 +1271,44 @@ def process_postback(provider: str, params: Dict[str, Any]):
         add_activity(user_id, "💸 CPAGrip conversion", points)
     except Exception:
         logger.exception("Activity log failed | user=%s", user_id)
+    _mark_provider_pending_rewarded(provider, user_id, event_id, points, offer_id)
+    _notify_user_verified(user_id, provider, points, offer_title)
     return {"ok": True, "message": "credited", "provider": provider, "event_id": event_id, "user_id": user_id, "points": points}
 
 
 
+
+
+
+def admin_test_provider_completion(provider: str, user_id: int, offer_id: str, points: int, title: str = ""):
+    """Credit a provider task/offer only for the configured Admin ID as a safe test path."""
+    if int(user_id) != int(ADMIN_ID):
+        return {"ok": False, "error": "admin_only"}
+    provider = str(provider or "").strip().lower()
+    offer_id = str(offer_id or "").strip()
+    points = int(points or 0)
+    if provider not in {"cpalead", "cpagrip", "offerwallme"}:
+        return {"ok": False, "error": "invalid_provider"}
+    if not offer_id or points <= 0:
+        return {"ok": False, "error": "invalid_offer_or_points"}
+    event_id = f"admin_test:{provider}:{int(user_id)}:{offer_id}"
+    try:
+        provider_events.insert_one({"provider": provider, "event_id": event_id, "user_id": int(user_id), "offer_id": offer_id, "offer_title": str(title or offer_id)[:200], "provider_reward": 0, "reward_raw": "admin_test", "points": points, "status": "admin_test", "received_at": int(time.time())})
+    except Exception as exc:
+        if "duplicate" in str(exc).lower() or "e11000" in str(exc).lower():
+            return {"ok": False, "error": "already_tested"}
+        logger.exception("Admin provider test event insert failed")
+        return {"ok": False, "error": "event_store_failed"}
+    if not add_balance(int(user_id), points):
+        provider_events.delete_one({"provider": provider, "event_id": event_id})
+        return {"ok": False, "error": "credit_failed"}
+    try:
+        record_transaction(int(user_id), f"{provider}_admin_test", points, event_id, metadata={"provider": provider, "offer_id": offer_id, "admin_test": "true"})
+        add_activity(int(user_id), f"🧪 {provider.upper()} admin test", points)
+    except Exception:
+        logger.exception("Admin provider test transaction/activity failed | provider=%s", provider)
+    _mark_provider_pending_rewarded(provider, int(user_id), event_id, points, offer_id)
+    return {"ok": True, "message": "admin_test_credited", "provider": provider, "offer_id": offer_id, "points": points}
 
 def get_cached_provider_offers(user_id: int):
     return _cache_get_stale(("cpagrip_offers", int(user_id)))
