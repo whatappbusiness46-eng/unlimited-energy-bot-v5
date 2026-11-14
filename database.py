@@ -1895,6 +1895,74 @@ def banned_users():
 
 
 # ============================================================
+# FORCE JOIN CONTROL + VERIFIED MEMBER GLOBAL GIFTS
+# ============================================================
+def get_force_join_enabled(default=True):
+    settings = bot_settings.find_one({"_id": "force_join_control"}) or {}
+    return bool(settings.get("enabled", default))
+
+
+def set_force_join_enabled(enabled):
+    return bot_settings.update_one(
+        {"_id": "force_join_control"},
+        {"$set": {"enabled": bool(enabled), "updated_at": int(time.time())}},
+        upsert=True,
+    )
+
+
+def mark_groups_verified_and_reward(user_id, reward_points=20):
+    """Mark a member verified and grant the one-time group reward safely."""
+    user_id = int(user_id)
+    now = int(time.time())
+    result = users.update_one(
+        {"user_id": user_id, "group_reward": {"$ne": True}, "banned": {"$ne": True}, "blacklisted": {"$ne": True}},
+        {"$set": {"groups_verified": True, "verified_at": now, "group_reward": True}},
+    )
+    if result.modified_count:
+        if int(reward_points or 0) > 0 and add_balance(user_id, int(reward_points)):
+            try:
+                add_activity(user_id, "force_join_reward", int(reward_points))
+            except Exception:
+                logger.exception("Could not record Force Join reward activity | user=%s", user_id)
+        elif int(reward_points or 0) > 0:
+            users.update_one({"user_id": user_id}, {"$set": {"group_reward": False, "groups_verified": False}})
+            return False
+        return True
+    # A previously rewarded member is still marked verified.
+    users.update_one({"user_id": user_id}, {"$set": {"groups_verified": True, "verified_at": now}})
+    return False
+
+
+def distribute_global_gift(batch_id, amount_points):
+    """Credit a gift once to every currently verified, eligible member."""
+    batch_id = str(batch_id)
+    amount_points = int(amount_points)
+    if not batch_id or amount_points <= 0:
+        return {"eligible": 0, "success": 0, "failed": 0, "already": 0}
+    eligible = users.count_documents({"groups_verified": True, "banned": {"$ne": True}, "blacklisted": {"$ne": True}})
+    success = failed = already = 0
+    for member in users.find({"groups_verified": True, "banned": {"$ne": True}, "blacklisted": {"$ne": True}}, {"user_id": 1, "global_gift_batches": 1}):
+        uid = member.get("user_id")
+        if uid is None:
+            failed += 1
+            continue
+        # Reserve the batch on the user document first to prevent duplicate credits.
+        reserved = users.update_one(
+            {"user_id": int(uid), "global_gift_batches": {"$ne": batch_id}},
+            {"$addToSet": {"global_gift_batches": batch_id}},
+        )
+        if not reserved.modified_count:
+            already += 1
+            continue
+        if add_balance(int(uid), amount_points):
+            success += 1
+        else:
+            users.update_one({"user_id": int(uid)}, {"$pull": {"global_gift_batches": batch_id}})
+            failed += 1
+    return {"eligible": eligible, "success": success, "failed": failed, "already": already}
+
+
+# ============================================================
 # FLASH JOIN BONUS / ACTIVE CAMPAIGN
 # ============================================================
 
@@ -2004,6 +2072,11 @@ def claim_join_bonus(user_id, tiers, duration_seconds=86400, enabled=True, campa
     except Exception:
         logger.exception("Join bonus claim failed | user=%s", user_id)
         return None
+
+def release_join_bonus_claim(user_id):
+    """Release a reserved campaign claim if the balance credit failed."""
+    return join_bonus_claims.delete_one({"user_id": int(user_id)}).deleted_count > 0
+
 
 def increment_campaign_score(user_id, task_delta=0, referral_delta=0):
     inc = {"campaign_score": int(task_delta) + int(referral_delta)}

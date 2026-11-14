@@ -59,6 +59,9 @@ from database import (
     get_withdrawal_settings,
     points_to_bdt,
     leaderboard,
+    get_force_join_enabled,
+    set_force_join_enabled,
+    distribute_global_gift,
 )
 
 
@@ -135,6 +138,14 @@ def admin_menu():
                 "🎁 Manage Rewards",
                 callback_data="admin_rewards",
             )
+        ],
+
+        [
+            InlineKeyboardButton(
+                f"🔒 Force Join: {'ON' if get_force_join_enabled(True) else 'OFF'}",
+                callback_data="admin_force_join_toggle",
+            ),
+            InlineKeyboardButton("🎁 Global Gift", callback_data="admin_global_gift"),
         ],
 
         [
@@ -2550,6 +2561,36 @@ async def admin_set_withdraw_step(update, context):
 
 
 # ==================================================
+# FORCE JOIN CONTROL + VERIFIED MEMBER GLOBAL GIFT
+# ==================================================
+async def admin_force_join_toggle(update, context):
+    query = update.callback_query
+    if not query or not admin_only(query.from_user.id):
+        if query: await query.answer("🚫 Admin only.", show_alert=True)
+        return
+    current = get_force_join_enabled(True)
+    set_force_join_enabled(not current)
+    await query.answer("Force Join updated.")
+    await admin_panel(update, context)
+
+
+async def admin_global_gift(update, context):
+    query = update.callback_query
+    if not query or not admin_only(query.from_user.id):
+        if query: await query.answer("🚫 Admin only.", show_alert=True)
+        return
+    eligible = users.count_documents({"groups_verified": True, "banned": {"$ne": True}, "blacklisted": {"$ne": True}})
+    context.user_data["admin_action"] = "global_gift_amount"
+    await query.edit_message_text(
+        "🎁 **GLOBAL GIFT CENTER**\n\n"
+        f"Verified eligible members: **{eligible}**\n\n"
+        "Send the gift amount in Points (whole number).\n"
+        "Only verified members (new and old) will receive it.",
+        reply_markup=admin_back(), parse_mode="Markdown"
+    )
+
+
+# ==================================================
 # BROADCAST
 # ==================================================
 
@@ -2700,6 +2741,30 @@ async def admin_text_handler(
     text = (
         update.message.text or ""
     ).strip()
+
+    # ==================================================
+    # GLOBAL GIFT AMOUNT + CONFIRMATION
+    # ==================================================
+    if action == "global_gift_amount":
+        try:
+            amount = int(text)
+            if amount <= 0 or amount > 100000000:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ Send a valid positive Points amount.", reply_markup=admin_back())
+            return True
+        eligible = users.count_documents({"groups_verified": True, "banned": {"$ne": True}, "blacklisted": {"$ne": True}})
+        context.user_data["global_gift_amount"] = amount
+        context.user_data["admin_action"] = "global_gift_confirm"
+        await update.message.reply_text(
+            "🎁 GLOBAL GIFT PREVIEW\n\n"
+            f"Gift per member: {amount:,} Points\n"
+            f"Eligible verified members: {eligible:,}\n"
+            f"Total distribution: {amount * eligible:,} Points\n\n"
+            "Confirm this one-time gift?",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm Gift", callback_data="admin_global_gift_confirm")], [InlineKeyboardButton("❌ Cancel", callback_data="admin")]])
+        )
+        return True
 
     # ==================================================
     # FIND USER
@@ -3816,6 +3881,26 @@ async def admin_callback(
         await admin_users_page(update, context, page)
         return
 
+    if data == "admin_global_gift_confirm":
+        if not admin_only(query.from_user.id):
+            await query.answer("🚫 Admin only.", show_alert=True); return
+        amount = int(context.user_data.get("global_gift_amount", 0) or 0)
+        if amount <= 0:
+            await query.answer("Gift session expired. Start again.", show_alert=True); return
+        batch_id = f"admin-gift-{time.time_ns()}-{query.from_user.id}"
+        context.user_data.clear()
+        result = distribute_global_gift(batch_id, amount)
+        await query.edit_message_text(
+            "🎁 **GLOBAL GIFT COMPLETE**\n\n"
+            f"Eligible: {result['eligible']}\n"
+            f"Successful: {result['success']}\n"
+            f"Failed: {result['failed']}\n"
+            f"Already processed: {result['already']}\n"
+            f"Gift per member: {amount:,} Points",
+            reply_markup=admin_back(), parse_mode="Markdown"
+        )
+        return
+
     if data.startswith("admin_join_bonus_page_"):
         try:
             page = int(data.rsplit("_", 1)[1])
@@ -3870,6 +3955,8 @@ async def admin_callback(
         "admin_cpagrip_refresh": admin_cpagrip_refresh,
         "admin_provider_payouts": admin_provider_payouts,
         "admin_provider_payouts_clear": admin_provider_payouts_clear,
+        "admin_force_join_toggle": admin_force_join_toggle,
+        "admin_global_gift": admin_global_gift,
         "admin_withdrawals": admin_withdrawals,
         "admin_vip_toggle": admin_vip_toggle,
         "admin_premium_on": admin_premium_on,

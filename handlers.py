@@ -33,6 +33,9 @@ from database import (
     add_activity as db_add_activity,
     add_balance,
     claim_join_bonus,
+    get_force_join_enabled,
+    mark_groups_verified_and_reward,
+    release_join_bonus_claim,
 )
 
 from config import (
@@ -330,7 +333,7 @@ async def start(
     # Force Join
     # --------------------------------------------------------
 
-    if FORCE_JOIN_ENABLED:
+    if get_force_join_enabled(FORCE_JOIN_ENABLED):
         not_joined = await check_force_join(user_id, context)
         if not_joined:
             await update.message.reply_text(
@@ -343,6 +346,8 @@ async def start(
                 parse_mode="Markdown",
             )
             return
+        # Also migrate existing members whose earlier verification was never saved.
+        mark_groups_verified_and_reward(user_id, GROUP_JOIN_REWARD)
 
     # --------------------------------------------------------
     # Automatic 24-hour Join Cash Bonus
@@ -375,6 +380,9 @@ async def start(
                     "🚀 Now complete Tasks and invite Friends to earn more!",
                     parse_mode="Markdown",
                 )
+            else:
+                release_join_bonus_claim(user_id)
+                logger.error("Join bonus balance credit failed; claim released | user=%s", user_id)
     except Exception:
         logger.exception("Automatic join bonus failed | user=%s", user_id)
 

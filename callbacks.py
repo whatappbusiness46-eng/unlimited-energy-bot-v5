@@ -21,6 +21,7 @@ from config import (
     GROUPS,
     VIP_PRICE,
     VIP_DAYS,
+    GROUP_JOIN_REWARD,
 )
 
 from database import (
@@ -31,6 +32,8 @@ from database import (
     add_activity,
     convert_bonus_to_balance,
     record_transaction,
+    get_force_join_enabled,
+    mark_groups_verified_and_reward,
  # existing imports...
     is_vip_purchase_enabled,
     set_vip_purchase_enabled,
@@ -934,6 +937,11 @@ async def verify_join_callback(
 
         return
 
+    if not get_force_join_enabled(True):
+        await query.answer("✅ Force Join is currently disabled.")
+        await _safe_edit_message_text(query, "✅ **Force Join is disabled.**\n\nYou can use the bot now.", reply_markup=main_menu(), parse_mode="Markdown")
+        return
+
     not_joined = []
 
     for group in GROUPS:
@@ -992,16 +1000,14 @@ async def verify_join_callback(
 
         return
 
-    await query.answer(
-        "✅ Verification successful!"
-    )
+    rewarded = mark_groups_verified_and_reward(user_id, GROUP_JOIN_REWARD)
+    await query.answer("✅ Verification successful!")
+    success_text = "✅ **VERIFICATION SUCCESSFUL!**\n\n🎉 You can now use Unlimited Energy Bot."
+    if rewarded:
+        success_text += f"\n\n🎁 Force Join reward: **{GROUP_JOIN_REWARD} Points** added!"
 
-    await _safe_edit_message_text(query, 
-
-        "✅ **VERIFICATION SUCCESSFUL!**\n\n"
-
-        "🎉 You can now use "
-        "Unlimited Energy Bot.",
+    await _safe_edit_message_text(query,
+        success_text,
 
         reply_markup=main_menu(),
 
