@@ -716,6 +716,52 @@ def create_user(
     return new_user
 
 
+
+
+# ============================================================
+# DELETE ONE MEMBER AND THEIR PERSONAL DATA
+# ============================================================
+
+def delete_user_data(user_id):
+    """Delete a member and per-user records; /start can then create a fresh account.
+
+    Global bot configuration/content is preserved. Provider event IDs remain as
+    anti-replay records so an old postback cannot issue duplicate rewards.
+    """
+    user_id = int(user_id)
+    per_user_collections = (
+        "transactions", "withdrawals", "security_logs", "join_bonus_claims",
+        "payments", "membership_payments", "task_completions", "referral_claims",
+        "referral_milestone_claims", "offerwall_task_proofs",
+        "offerwall_task_submissions", "provider_pending",
+    )
+    deleted = {}
+    for collection_name in per_user_collections:
+        result = db[collection_name].delete_many({
+            "$or": [
+                {"user_id": user_id},
+                {"new_user_id": user_id},
+                {"referrer_id": user_id},
+                {"telegram_id": user_id},
+            ]
+        })
+        deleted[collection_name] = int(result.deleted_count)
+
+    # Detach other members who had this account as their referrer.
+    users.update_many(
+        {"referred_by": user_id},
+        {"$unset": {"referred_by": "", "referral_pending": "", "referral_linked_at": ""}},
+    )
+
+    # Retain provider event IDs to prevent replayed postbacks.
+    db["provider_events"].update_many(
+        {"user_id": user_id},
+        {"$unset": {"user_id": ""}, "$set": {"user_data_reset": True}},
+    )
+    deleted["users"] = int(users.delete_one({"user_id": user_id}).deleted_count)
+    return deleted
+
+
 # ============================================================
 # GET USER
 # ============================================================
