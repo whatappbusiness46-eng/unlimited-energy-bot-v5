@@ -11,7 +11,7 @@ import secrets
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, Optional
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from database import db, add_balance, add_activity, get_user, record_transaction, remove_balance, get_membership_multiplier
@@ -275,6 +275,32 @@ def _notify_user_verified(user_id: int, provider: str, points: int, title: str =
 
 def _offerwallme_credentials():
     return _env("OFFERWALLME_API_KEY"), _env("OFFERWALLME_BEARER_TOKEN")
+
+
+def get_offerwallme_hosted_url(user_id: int) -> str:
+    """Create a short-lived signed hosted Offerwall.me URL for a Telegram user.
+
+    The hosted placement handles the visitor IP, task starts, PTC flow and proof
+    submission itself. Never substitute the Render server IP for a member IP.
+    """
+    if not _enabled("offerwallme"):
+        return ""
+    public_key = _env("OFFERWALLME_API_KEY")
+    # Offerwall.me uses the placement's private secret for both identity signing
+    # and the existing postback signature verification.
+    private_secret = _env("OFFERWALLME_POSTBACK_SECRET")
+    if not public_key or not private_secret:
+        logger.warning("Offerwall.me hosted wall unavailable: missing public key or private placement secret")
+        return ""
+
+    uid = str(int(user_id))
+    expires = str(int(time.time()) + 3600)
+    message = "offerwall-user-v1\n" + public_key + "\n" + uid + "\n" + expires
+    signature = hmac.new(
+        private_secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    query = urlencode({"identityExpires": expires, "identitySignature": signature})
+    return f"https://offerwall.me/offerwall/{quote(public_key, safe='')}/{quote(uid, safe='')}?{query}"
 
 
 def _offerwallme_public_ip():

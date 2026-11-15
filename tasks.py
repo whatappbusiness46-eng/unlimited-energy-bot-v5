@@ -24,6 +24,7 @@ from provider_integrations import (
     get_cpa_lead_bd_offers, get_cached_cpa_lead_bd_offers, refresh_cpa_lead_bd_offers,
     _cpa_lead_member_reward_points, _cpa_lead_offer_url, _record_provider_pending, _provider_task_hidden,
     _offerwallme_task_tracking_url, admin_test_provider_completion,
+    get_offerwallme_hosted_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -619,22 +620,17 @@ async def tasks_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db_user or db_user.get("banned") or db_user.get("blacklisted"):
         await message.reply_text("🚫 Your account is restricted."); return
     task_list=get_tasks(user_id=user.id); count,_=_daily_count(db_user); settings=db["bot_settings"].find_one({"_id":"main"}) or {}; limit=max(1,_safe_int(settings.get("daily_task_limit"),20))
-    offerwall_tasks = _get_offerwall_tasks_cached(user.id)
-    if not provider_cache_fresh("offerwallme_tasks", user.id):
-        try:
-            if update.callback_query:
-                context.application.create_task(_refresh_tasks_in_background(update.callback_query, user.id))
-            else:
-                context.application.create_task(asyncio.to_thread(refresh_offerwallme_tasks, user.id))
-        except Exception:
-            pass
+    # Offerwall.me is opened as its hosted signed placement. This avoids
+    # requesting task feeds from Render with the server IP masquerading as the
+    # Telegram member's IP; the hosted placement handles PTC and proof flows.
+    offerwall_tasks = []
     normal=[t for t in task_list if t.get("audience","normal") in {"normal","both"}]
     vip=[t for t in task_list if t.get("audience","normal") in {"vip","both"}]
     if not task_list and not offerwall_tasks:
         text = (
             "🎯 **টাস্ক সেন্টার**\n\n"
-            "এই মুহূর্তে কোনো টাস্ক পাওয়া যাচ্ছে না।\n"
-            "টাস্ক তালিকা স্বয়ংক্রিয়ভাবে আপডেট হয়। কিছুক্ষণ পর আবার চেষ্টা করুন।"
+            "এই মুহূর্তে কোনো custom task নেই।\n"
+            "Offerwall.me-এর task ও PTC দেখতে নিচের 🎁 রিওয়ার্ড টাস্ক বাটনে চাপ দিন।"
         )
     else:
         text = "🎯 **টাস্ক সেন্টার**\n\nনিচের তালিকা থেকে টাস্কের ধরন বেছে নিন।"
@@ -708,45 +704,31 @@ async def cpalead_tasks_callback(update, context):
 
 
 async def rewards_tasks_callback(update, context):
-    """Show Offerwall.me tasks using the previous category-button layout."""
+    """Open the official Offerwall.me hosted placement with a signed user ID."""
     q = update.callback_query
     if not q or q.data != "reward_tasks":
         return
     await q.answer()
     user_id = int(q.from_user.id)
+    wall_url = get_offerwallme_hosted_url(user_id)
 
-    tasks = _get_offerwall_tasks_cached(user_id)
-    if not tasks or not provider_cache_fresh("offerwallme_tasks", user_id):
-        try:
-            fresh = await asyncio.to_thread(refresh_offerwallme_tasks, user_id)
-            if fresh is not None:
-                tasks = list(fresh or [])
-            else:
-                tasks = _get_offerwall_tasks_cached(user_id)
-        except Exception:
-            logger.exception("Offerwall.me Rewards Tasks refresh failed | user=%s", user_id)
-            tasks = _get_offerwall_tasks_cached(user_id)
+    if wall_url:
+        text = (
+            "🎁 **Offerwall.me Rewards**\n\n"
+            "নিচের বাটনে চাপ দিলে Offerwall.me-এর নিরাপদ hosted page খুলবে। "
+            "সেখানে উপলভ্য tasks, PTC ads এবং প্রয়োজনীয় proof submission সম্পন্ন করতে পারবেন।\n\n"
+            "✅ আপনার Telegram user ID-এর জন্য signed link তৈরি হয়েছে।\n"
+            "ℹ️ কাজ ও পুরস্কার Offerwall.me-এর country, device এবং placement inventory-এর ওপর নির্ভর করে।"
+        )
+        buttons = [[InlineKeyboardButton("🚀 Open Offerwall.me", url=wall_url)]]
+    else:
+        text = (
+            "⚠️ **Offerwall.me সেটআপ অসম্পূর্ণ**\n\n"
+            "Render Environment-এ OFFERWALLME_ENABLED=true, OFFERWALLME_API_KEY "
+            "এবং OFFERWALLME_POSTBACK_SECRET সঠিকভাবে সেট করুন।"
+        )
+        buttons = []
 
-    category_order = ["easy", "app", "video", "survey", "other"]
-    buttons = []
-    for category in category_order:
-        category_tasks = [
-            t for t in tasks
-            if _offerwall_task_category(t) == category
-            and not _provider_task_hidden("offerwallme", user_id, str(t.get("id") or ""))
-        ]
-        label = _offerwall_task_category_label(category)
-        buttons.append([InlineKeyboardButton(
-            f"{label} ({len(category_tasks)})" if category_tasks else label,
-            callback_data=f"owcat_{category}",
-        )])
-
-    text = (
-        "🎁 **রিওয়ার্ড টাস্ক**\n\n"
-        "নিচের তালিকা থেকে টাস্কের ধরন বেছে নিন।\n"
-        "Offerwall.me থেকে কাজ যাচাই হওয়ার পর Points যোগ হবে।\n\n"
-        f"📋 উপলভ্য টাস্ক: {len(tasks)}"
-    )
     buttons.append([InlineKeyboardButton("⬅️ টাস্কসমূহ", callback_data="tasks"), InlineKeyboardButton("🏠 হোম", callback_data="home")])
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
