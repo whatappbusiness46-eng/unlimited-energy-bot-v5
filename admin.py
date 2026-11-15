@@ -10,7 +10,7 @@ from telegram import (
 
 from telegram.ext import ContextTypes
 
-from config import ADMIN_ID
+from config import ADMIN_ID, JOIN_BONUS_ENABLED
 
 from provider_integrations import (
     get_provider_offers,
@@ -62,6 +62,8 @@ from database import (
     get_force_join_enabled,
     set_force_join_enabled,
     distribute_global_gift,
+    get_join_bonus_control,
+    set_join_bonus_control,
 )
 
 
@@ -117,6 +119,20 @@ def admin_menu():
                 "📊 Statistics",
                 callback_data="admin_stats",
             ),
+        ],
+
+        [
+            InlineKeyboardButton(
+                "🗑 Delete User Data",
+                callback_data="admin_delete_user_data",
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                f"🎁 Join Bonus: {'ON' if get_join_bonus_control().get('enabled', JOIN_BONUS_ENABLED) else 'OFF'}",
+                callback_data="admin_join_bonus_control",
+            )
         ],
 
         [
@@ -311,6 +327,12 @@ def user_info_keyboard(user_id):
                 )
             ],
 
+            [
+                InlineKeyboardButton(
+                    "🗑 Delete User Data",
+                    callback_data=f"admin_delete_user_data_{user_id}",
+                )
+            ],
             [
                 InlineKeyboardButton(
                     "🔙 Users",
@@ -590,6 +612,54 @@ async def admin_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, p
 
 
 # ==================================================
+# JOIN BONUS ON/OFF — ADMIN ONLY
+# ==================================================
+
+async def admin_join_bonus_control_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not admin_only(query.from_user.id):
+        if query:
+            await query.answer("🚫 Admin only.", show_alert=True)
+        return
+    control = get_join_bonus_control()
+    enabled = bool(control.get("enabled", JOIN_BONUS_ENABLED))
+    await query.answer()
+    await query.edit_message_text(
+        "🎁 **JOIN BONUS CONTROL**\n\n"
+        f"Current Status: {'🟢 ON' if enabled else '🔴 OFF'}\n\n"
+        "ON = Eligible users can claim the Join Bonus.\n"
+        "OFF = New Join Bonus claims are paused.\n\n"
+        "This switch does not change existing balances or claim history.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "🔴 Turn OFF" if enabled else "🟢 Turn ON",
+                callback_data="admin_join_bonus_toggle",
+            )],
+            [InlineKeyboardButton("🔄 Refresh", callback_data="admin_join_bonus_control")],
+            [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")],
+        ]),
+        parse_mode="Markdown",
+    )
+
+
+async def admin_join_bonus_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not admin_only(query.from_user.id):
+        if query:
+            await query.answer("🚫 Admin only.", show_alert=True)
+        return
+    control = get_join_bonus_control()
+    current = bool(control.get("enabled", JOIN_BONUS_ENABLED))
+    new_status = not current
+    result = set_join_bonus_control(enabled=new_status)
+    if not result.acknowledged:
+        await query.answer("Could not update Join Bonus status.", show_alert=True)
+        return
+    await query.answer("Join Bonus turned ON." if new_status else "Join Bonus turned OFF.")
+    await admin_join_bonus_control_page(update, context)
+
+
+# ==================================================
 # JOIN BONUS CLAIMS — ADMIN ONLY
 # ==================================================
 
@@ -725,7 +795,7 @@ async def show_admin_user(
 
     query = update.callback_query
 
-    user = get_user(user_id)
+    user = get_user(user_id, create=False)
 
     if not user:
 
@@ -2743,6 +2813,37 @@ async def admin_text_handler(
     ).strip()
 
     # ==================================================
+    # DELETE USER DATA: TARGET USER ID
+    # ==================================================
+    if action == "delete_user_data_find":
+        try:
+            target_id = int(text)
+            if target_id <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ Send a valid positive Telegram User ID.", reply_markup=admin_back())
+            return True
+        context.user_data.pop("admin_action", None)
+        user = get_user(target_id, create=False)
+        if not user:
+            await update.message.reply_text("❌ User not found. No data was changed.", reply_markup=admin_back())
+            return True
+        context.user_data["delete_user_data_target"] = target_id
+        await update.message.reply_text(
+            "⚠️ **CONFIRM DELETE USER DATA**\n\n"
+            f"User ID: `{target_id}`\n"
+            "This permanently deletes this user's account, balance, bonus, activity, task records, referral claims, and personal transaction/payment records.\n\n"
+            "Global bot settings, tasks, other users, and provider conversion ledger (duplicate protection) will be preserved.\n\n"
+            "Are you sure?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Yes, Delete User Data", callback_data=f"admin_delete_user_data_confirm_{target_id}")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="admin")],
+            ]),
+            parse_mode="Markdown",
+        )
+        return True
+
+    # ==================================================
     # GLOBAL GIFT AMOUNT + CONFIRMATION
     # ==================================================
     if action == "global_gift_amount":
@@ -3845,6 +3946,88 @@ async def admin_maintenance_indexes(update, context):
 # ADMIN CALLBACK ROUTER
 # ==================================================
 
+async def admin_delete_user_data_start(update, context, target_id=None):
+    """Ask for a user ID or show a strict confirmation before deleting account data."""
+    query = update.callback_query
+    if not query or not admin_only(query.from_user.id):
+        if query:
+            await query.answer("🚫 Admin only.", show_alert=True)
+        return
+
+    if target_id is None:
+        context.user_data["admin_action"] = "delete_user_data_find"
+        await query.edit_message_text(
+            "🗑 **DELETE USER DATA**\n\n"
+            "Send the Telegram User ID whose account data you want to delete.\n"
+            "No data will be deleted until you confirm.",
+            reply_markup=admin_back(),
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        target_id = int(target_id)
+    except (TypeError, ValueError):
+        await query.answer("Invalid User ID.", show_alert=True)
+        return
+
+    user = get_user(target_id, create=False)
+    if not user:
+        await query.edit_message_text(
+            f"❌ User `{target_id}` was not found.",
+            reply_markup=admin_back(), parse_mode="Markdown",
+        )
+        return
+
+    context.user_data["delete_user_data_target"] = target_id
+    await query.edit_message_text(
+        "⚠️ **CONFIRM DELETE USER DATA**\n\n"
+        f"User ID: `{target_id}`\n"
+        "This permanently deletes this user's account, balance, bonus, activity, task records, referral claims, and personal transaction/payment records.\n\n"
+        "Global bot settings, tasks, other users, and provider conversion ledger (duplicate protection) will be preserved.\n\n"
+        "Are you sure?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Yes, Delete User Data", callback_data=f"admin_delete_user_data_confirm_{target_id}")],
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"admin_delete_user_data_cancel_{target_id}")],
+        ]),
+        parse_mode="Markdown",
+    )
+
+
+def _delete_user_data_records(target_id):
+    """Delete only records belonging to one user; preserve global config and provider dedupe ledger."""
+    target_id = int(target_id)
+    report = {}
+    # Collections with a direct user_id key.
+    for name in (
+        "transactions", "withdrawals", "security_logs", "task_completions",
+        "offerwall_task_proofs", "offerwall_task_submissions", "provider_pending",
+        "membership_payments", "referral_milestone_claims", "join_bonus_claims",
+    ):
+        try:
+            result = db[name].delete_many({"user_id": target_id})
+            report[name] = int(result.deleted_count)
+        except Exception:
+            logger.exception("Could not clear %s for user %s", name, target_id)
+            raise
+
+    # Referral claim rows can refer to a user as either side of the referral.
+    for name, query in (
+        ("referral_claims", {"$or": [{"new_user_id": target_id}, {"referrer_id": target_id}, {"referred_user_id": target_id}]}),
+    ):
+        try:
+            result = db[name].delete_many(query)
+            report[name] = int(result.deleted_count)
+        except Exception:
+            logger.exception("Could not clear %s for user %s", name, target_id)
+            raise
+
+    # Keep provider_events as an immutable conversion/idempotency ledger.
+    result = users.delete_one({"user_id": target_id})
+    report["users"] = int(result.deleted_count)
+    return report
+
+
 async def admin_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -3870,6 +4053,14 @@ async def admin_callback(
 
     if data in ("admin", "admin_panel"):
         await admin_panel(update, context)
+        return
+
+    if data == "admin_join_bonus_control":
+        await admin_join_bonus_control_page(update, context)
+        return
+
+    if data == "admin_join_bonus_toggle":
+        await admin_join_bonus_toggle(update, context)
         return
 
     if data.startswith("admin_users_page_"):
@@ -3899,6 +4090,55 @@ async def admin_callback(
             f"Gift per member: {amount:,} Points",
             reply_markup=admin_back(), parse_mode="Markdown"
         )
+        return
+
+    if data == "admin_delete_user_data":
+        await admin_delete_user_data_start(update, context)
+        return
+
+    if data.startswith("admin_delete_user_data_confirm_"):
+        try:
+            target_id = int(data.rsplit("_", 1)[1])
+        except ValueError:
+            await query.answer("Invalid User ID.", show_alert=True)
+            return
+        if context.user_data.get("delete_user_data_target") != target_id:
+            await query.answer("Confirmation expired. Start again.", show_alert=True)
+            return
+        try:
+            report = _delete_user_data_records(target_id)
+        except Exception:
+            await query.edit_message_text(
+                "❌ Could not completely delete this user's data. Check server logs before retrying.",
+                reply_markup=admin_back(),
+            )
+            context.user_data.pop("delete_user_data_target", None)
+            return
+        context.user_data.pop("delete_user_data_target", None)
+        context.user_data.pop("admin_action", None)
+        deleted = sum(report.values())
+        await query.edit_message_text(
+            "✅ **USER DATA DELETED**\n\n"
+            f"User ID: `{target_id}`\n"
+            f"Deleted records: `{deleted}`\n\n"
+            "The user can create a fresh account again with /start. Other users and global settings were not changed.",
+            reply_markup=admin_back(), parse_mode="Markdown",
+        )
+        return
+
+    if data.startswith("admin_delete_user_data_cancel_"):
+        context.user_data.pop("delete_user_data_target", None)
+        context.user_data.pop("admin_action", None)
+        await admin_panel(update, context)
+        return
+
+    if data.startswith("admin_delete_user_data_") and not data.startswith(("admin_delete_user_data_confirm_", "admin_delete_user_data_cancel_")):
+        try:
+            target_id = int(data.rsplit("_", 1)[1])
+        except ValueError:
+            await query.answer("Invalid User ID.", show_alert=True)
+            return
+        await admin_delete_user_data_start(update, context, target_id)
         return
 
     if data.startswith("admin_join_bonus_page_"):
