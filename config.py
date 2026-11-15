@@ -186,7 +186,9 @@ SHORTLINK_XP = 10
 # Default conversion: 10 Points = ৳1, so 50৳ = 500 Points.
 JOIN_BONUS_ENABLED = os.getenv("JOIN_BONUS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 JOIN_BONUS_POINTS_PER_BDT = max(1, int(os.getenv("JOIN_BONUS_POINTS_PER_BDT", "10")))
-JOIN_BONUS_DURATION_SECONDS = max(60, int(os.getenv("JOIN_BONUS_DURATION_SECONDS", "86400")))
+# Join Bonus is lifetime-open; retained for backward compatibility with older deployments.
+# The claim logic no longer applies a duration/end-time cutoff.
+JOIN_BONUS_DURATION_SECONDS = 0
 JOIN_BONUS_FIRST_TIER_COUNT = max(0, int(os.getenv("JOIN_BONUS_FIRST_TIER_COUNT", "100")))
 JOIN_BONUS_FIRST_TIER_BDT = max(0, int(os.getenv("JOIN_BONUS_FIRST_TIER_BDT", "50")))
 JOIN_BONUS_SECOND_TIER_COUNT = max(0, int(os.getenv("JOIN_BONUS_SECOND_TIER_COUNT", "250")))

@@ -716,52 +716,6 @@ def create_user(
     return new_user
 
 
-
-
-# ============================================================
-# DELETE ONE MEMBER AND THEIR PERSONAL DATA
-# ============================================================
-
-def delete_user_data(user_id):
-    """Delete a member and per-user records; /start can then create a fresh account.
-
-    Global bot configuration/content is preserved. Provider event IDs remain as
-    anti-replay records so an old postback cannot issue duplicate rewards.
-    """
-    user_id = int(user_id)
-    per_user_collections = (
-        "transactions", "withdrawals", "security_logs", "join_bonus_claims",
-        "payments", "membership_payments", "task_completions", "referral_claims",
-        "referral_milestone_claims", "offerwall_task_proofs",
-        "offerwall_task_submissions", "provider_pending",
-    )
-    deleted = {}
-    for collection_name in per_user_collections:
-        result = db[collection_name].delete_many({
-            "$or": [
-                {"user_id": user_id},
-                {"new_user_id": user_id},
-                {"referrer_id": user_id},
-                {"telegram_id": user_id},
-            ]
-        })
-        deleted[collection_name] = int(result.deleted_count)
-
-    # Detach other members who had this account as their referrer.
-    users.update_many(
-        {"referred_by": user_id},
-        {"$unset": {"referred_by": "", "referral_pending": "", "referral_linked_at": ""}},
-    )
-
-    # Retain provider event IDs to prevent replayed postbacks.
-    db["provider_events"].update_many(
-        {"user_id": user_id},
-        {"$unset": {"user_id": ""}, "$set": {"user_data_reset": True}},
-    )
-    deleted["users"] = int(users.delete_one({"user_id": user_id}).deleted_count)
-    return deleted
-
-
 # ============================================================
 # GET USER
 # ============================================================
@@ -2051,15 +2005,23 @@ def clear_join_bonus_schedule():
 def _campaign_now():
     return int(time.time())
 
-def start_or_get_join_bonus_campaign(duration_seconds=86400, start_at=None):
+def start_or_get_join_bonus_campaign(duration_seconds=0, start_at=None):
+    """Create/read the Join Bonus campaign without an expiry timestamp.
+
+    Existing ends_at values from older deployments are intentionally ignored by
+    claim_join_bonus(), so an old expired campaign does not block new claims.
+    """
     now = _campaign_now()
     current = get_active_campaign_settings()
-    if current.get("started_at") and current.get("ends_at"):
+    if current.get("started_at"):
         return current
     started = int(start_at or now)
-    ends = started + int(duration_seconds)
-    doc = {"_id":"active_campaign", "started_at":started, "ends_at":ends, "updated_at":now}
-    bot_settings.update_one({"_id":"active_campaign", "started_at":{"$exists":False}}, {"$set":doc}, upsert=True)
+    doc = {"_id": "active_campaign", "started_at": started, "ends_at": 0, "updated_at": now}
+    bot_settings.update_one(
+        {"_id": "active_campaign", "started_at": {"$exists": False}},
+        {"$set": doc},
+        upsert=True,
+    )
     return get_active_campaign_settings()
 
 def claim_join_bonus(user_id, tiers, duration_seconds=86400, enabled=True, campaign_start_at=None):
@@ -2075,10 +2037,9 @@ def claim_join_bonus(user_id, tiers, duration_seconds=86400, enabled=True, campa
     # Admin schedule, when configured, is the authoritative ON/OFF window.
     # This does not change the existing tier counts or rewards.
     scheduled_start = control.get("start_at")
-    scheduled_end = control.get("end_at")
+    # An old Admin end_at is deliberately ignored: the Join Bonus is unlimited
+    # in duration. Admin ON/OFF (enabled) still controls whether claims are open.
     if scheduled_start is not None and now < int(scheduled_start):
-        return None
-    if scheduled_end is not None and now > int(scheduled_end):
         return None
 
     campaign = get_active_campaign_settings()
@@ -2088,10 +2049,7 @@ def claim_join_bonus(user_id, tiers, duration_seconds=86400, enabled=True, campa
             campaign_start_at if scheduled_start is None else int(scheduled_start),
         )
 
-    # Keep the old 24-hour campaign behaviour when no admin schedule exists.
-    # If an admin schedule exists, its end time controls availability.
-    if scheduled_end is None and now > int(campaign.get("ends_at", 0)):
-        return None
+    # No ends_at/duration check: this campaign remains open indefinitely.
     if join_bonus_claims.find_one({"user_id": user_id}):
         return None
     try:
@@ -2112,7 +2070,7 @@ def claim_join_bonus(user_id, tiers, duration_seconds=86400, enabled=True, campa
             return None
         count, bdt, sequence = tier
         join_bonus_claims.insert_one({"user_id":user_id,"campaign_id":"active_campaign","sequence":sequence,"bdt":bdt,"claimed_at":now})
-        return {"bdt":bdt,"sequence":sequence,"campaign_id":"active_campaign","ends_at":int(campaign.get("ends_at",0))}
+        return {"bdt": bdt, "sequence": sequence, "campaign_id": "active_campaign", "ends_at": 0}
     except DuplicateKeyError:
         return None
     except Exception:

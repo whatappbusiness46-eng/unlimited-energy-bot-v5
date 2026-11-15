@@ -350,7 +350,7 @@ async def start(
         mark_groups_verified_and_reward(user_id, GROUP_JOIN_REWARD)
 
     # --------------------------------------------------------
-    # Automatic 24-hour Join Cash Bonus
+    # Automatic Unlimited-Duration Join Cash Bonus
     # --------------------------------------------------------
     try:
         tiers = [
@@ -374,7 +374,7 @@ async def start(
                     "🎉 **CONGRATULATIONS!** 🎉\n\n"
                     f"💰 You received **৳{bdt} CASH JOIN BONUS**!\n"
                     f"💵 Bonus: **৳{bdt}**\n"
-                    "🎁 Event: **24 Hours Flash Event**\n\n"
+                    "🎁 Event: **Unlimited Join Bonus Event**\n\n"
                     "❤️ Your bonus has been added to your balance.\n"
                     f"🏷️ Join Position: **#{sequence}**\n\n"
                     "🚀 Now complete Tasks and invite Friends to earn more!",

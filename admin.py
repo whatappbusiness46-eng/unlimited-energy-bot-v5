@@ -10,7 +10,7 @@ from telegram import (
 
 from telegram.ext import ContextTypes
 
-from config import ADMIN_ID
+from config import ADMIN_ID, JOIN_BONUS_ENABLED
 
 from provider_integrations import (
     get_provider_offers,
@@ -39,7 +39,6 @@ from shortlinks import (
 
 from database import (
     get_user,
-    delete_user_data,
     update_user,
     add_balance,
     remove_balance,
@@ -63,6 +62,8 @@ from database import (
     get_force_join_enabled,
     set_force_join_enabled,
     distribute_global_gift,
+    get_join_bonus_control,
+    set_join_bonus_control,
 )
 
 
@@ -122,6 +123,13 @@ def admin_menu():
 
         [
             InlineKeyboardButton(
+                f"🎁 Join Bonus: {'ON' if get_join_bonus_control().get('enabled', JOIN_BONUS_ENABLED) else 'OFF'}",
+                callback_data="admin_join_bonus_control",
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
                 "🏆 Leaderboard",
                 callback_data="admin_leaderboard",
             )
@@ -131,12 +139,6 @@ def admin_menu():
             InlineKeyboardButton(
                 "💰 Manage Balance",
                 callback_data="admin_balance",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🗑 Delete / Reset User Data",
-                callback_data="admin_delete_user",
             )
         ],
 
@@ -597,6 +599,54 @@ async def admin_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, p
 
 
 # ==================================================
+# JOIN BONUS ON/OFF — ADMIN ONLY
+# ==================================================
+
+async def admin_join_bonus_control_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not admin_only(query.from_user.id):
+        if query:
+            await query.answer("🚫 Admin only.", show_alert=True)
+        return
+    control = get_join_bonus_control()
+    enabled = bool(control.get("enabled", JOIN_BONUS_ENABLED))
+    await query.answer()
+    await query.edit_message_text(
+        "🎁 **JOIN BONUS CONTROL**\n\n"
+        f"Current Status: {'🟢 ON' if enabled else '🔴 OFF'}\n\n"
+        "ON = Eligible users can claim the Join Bonus.\n"
+        "OFF = New Join Bonus claims are paused.\n\n"
+        "This switch does not change existing balances or claim history.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "🔴 Turn OFF" if enabled else "🟢 Turn ON",
+                callback_data="admin_join_bonus_toggle",
+            )],
+            [InlineKeyboardButton("🔄 Refresh", callback_data="admin_join_bonus_control")],
+            [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")],
+        ]),
+        parse_mode="Markdown",
+    )
+
+
+async def admin_join_bonus_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not admin_only(query.from_user.id):
+        if query:
+            await query.answer("🚫 Admin only.", show_alert=True)
+        return
+    control = get_join_bonus_control()
+    current = bool(control.get("enabled", JOIN_BONUS_ENABLED))
+    new_status = not current
+    result = set_join_bonus_control(enabled=new_status)
+    if not result.acknowledged:
+        await query.answer("Could not update Join Bonus status.", show_alert=True)
+        return
+    await query.answer("Join Bonus turned ON." if new_status else "Join Bonus turned OFF.")
+    await admin_join_bonus_control_page(update, context)
+
+
+# ==================================================
 # JOIN BONUS CLAIMS — ADMIN ONLY
 # ==================================================
 
@@ -630,7 +680,7 @@ async def admin_join_bonus_page(update: Update, context: ContextTypes.DEFAULT_TY
     text = (
         "🎁 <b>JOIN BONUS CLAIMS</b>\n"
         f"📄 Page {page}/{total_pages} • Total Claims: {total}\n"
-        f"💰 Total Bonus Paid: ৳{total_bdt}\n\n"
+        f"💰 Total Bonus Claimed: ৳{total_bdt}\n\n"
     )
 
     if not claims:
@@ -2722,47 +2772,6 @@ async def admin_bc_specific(
 # ADMIN TEXT HANDLER
 # ==================================================
 
-async def admin_delete_user_prompt(update, context):
-    query = update.callback_query
-    if not query or not admin_only(query.from_user.id):
-        return
-    await query.answer()
-    context.user_data["admin_action"] = "delete_user_data_id"
-    await query.edit_message_text(
-        "🗑 DELETE USER DATA\\n\\nSend the numeric Telegram User ID. "
-        "This permanently deletes that member's account and personal history. "
-        "The admin account cannot be deleted.",
-        reply_markup=admin_back(),
-    )
-
-
-async def admin_delete_user_confirm(update, context):
-    query = update.callback_query
-    if not query or not admin_only(query.from_user.id):
-        return
-    try:
-        target_id = int(str(query.data).split("_")[-1])
-    except (TypeError, ValueError):
-        await query.edit_message_text("❌ Invalid User ID.", reply_markup=admin_back())
-        return
-    if target_id == int(ADMIN_ID):
-        await query.edit_message_text("❌ The admin account is protected.", reply_markup=admin_back())
-        return
-    if not get_user(target_id, create=False):
-        await query.edit_message_text("❌ User not found. No data was deleted.", reply_markup=admin_back())
-        return
-    counts = delete_user_data(target_id)
-    total = sum(counts.values())
-    await query.edit_message_text(
-        f"✅ User `{target_id}` data reset completed.\\n"
-        f"Deleted records: {total}\\n\\n"
-        "If this person sends /start again, the bot creates a fresh account "
-        "with the normal new-user defaults and bonus eligibility.",
-        reply_markup=admin_back(),
-        parse_mode="Markdown",
-    )
-
-
 async def admin_text_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -2789,33 +2798,6 @@ async def admin_text_handler(
     text = (
         update.message.text or ""
     ).strip()
-
-    if action == "delete_user_data_id":
-        try:
-            target_id = int(text)
-            if target_id <= 0:
-                raise ValueError
-        except ValueError:
-            await update.message.reply_text("❌ Send a valid positive Telegram User ID.", reply_markup=admin_back())
-            return True
-        context.user_data.pop("admin_action", None)
-        if target_id == int(ADMIN_ID):
-            await update.message.reply_text("❌ The admin account is protected.", reply_markup=admin_back())
-            return True
-        if not get_user(target_id, create=False):
-            await update.message.reply_text("❌ User not found. No data was deleted.", reply_markup=admin_back())
-            return True
-        await update.message.reply_text(
-            f"⚠️ Confirm permanent deletion for User ID `{target_id}`?\\n"
-            "Their account, balance, bonuses, referral/task history, VIP/premium "
-            "state and withdrawal records will be deleted.\\nThis cannot be undone.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🗑 YES, DELETE USER DATA", callback_data=f"admin_delete_user_confirm_{target_id}")],
-                [InlineKeyboardButton("❌ Cancel", callback_data="admin")],
-            ]),
-            parse_mode="Markdown",
-        )
-        return True
 
     # ==================================================
     # GLOBAL GIFT AMOUNT + CONFIRMATION
@@ -3943,16 +3925,16 @@ async def admin_callback(
     except Exception:
         pass
 
-    if data == "admin_delete_user":
-        await admin_delete_user_prompt(update, context)
-        return
-
-    if data.startswith("admin_delete_user_confirm_"):
-        await admin_delete_user_confirm(update, context)
-        return
-
     if data in ("admin", "admin_panel"):
         await admin_panel(update, context)
+        return
+
+    if data == "admin_join_bonus_control":
+        await admin_join_bonus_control_page(update, context)
+        return
+
+    if data == "admin_join_bonus_toggle":
+        await admin_join_bonus_toggle(update, context)
         return
 
     if data.startswith("admin_users_page_"):
