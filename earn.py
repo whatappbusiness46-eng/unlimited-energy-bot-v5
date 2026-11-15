@@ -115,10 +115,6 @@ def earn_menu():
                     "📋 Tasks",
                     callback_data="tasks",
                 ),
-                InlineKeyboardButton(
-                    "🔗 Shortlinks",
-                    callback_data="shortlinks",
-                ),
             ],
             [
                 InlineKeyboardButton(
@@ -186,7 +182,6 @@ async def earn_page(
         "Choose a way to earn Points:\n\n"
         "🎁 Daily Bonus\n"
         "📋 Complete Tasks\n"
-        "🔗 Complete Shortlinks\n"
         "🎁 Offers\n"
         "💎 Reward Tasks\n"
         "🎡 Spin Wheel\n"

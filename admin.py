@@ -10,7 +10,7 @@ from telegram import (
 
 from telegram.ext import ContextTypes
 
-from config import ADMIN_ID, JOIN_BONUS_ENABLED
+from config import ADMIN_ID
 
 from provider_integrations import (
     get_provider_offers,
@@ -62,8 +62,6 @@ from database import (
     get_force_join_enabled,
     set_force_join_enabled,
     distribute_global_gift,
-    get_join_bonus_control,
-    set_join_bonus_control,
 )
 
 
@@ -119,13 +117,6 @@ def admin_menu():
                 "📊 Statistics",
                 callback_data="admin_stats",
             ),
-        ],
-
-        [
-            InlineKeyboardButton(
-                f"🎁 Join Bonus: {'ON' if get_join_bonus_control().get('enabled', JOIN_BONUS_ENABLED) else 'OFF'}",
-                callback_data="admin_join_bonus_control",
-            )
         ],
 
         [
@@ -596,54 +587,6 @@ async def admin_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, p
             await query.answer("⚠️ Could not load users.", show_alert=True)
         except Exception:
             pass
-
-
-# ==================================================
-# JOIN BONUS ON/OFF — ADMIN ONLY
-# ==================================================
-
-async def admin_join_bonus_control_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query or not admin_only(query.from_user.id):
-        if query:
-            await query.answer("🚫 Admin only.", show_alert=True)
-        return
-    control = get_join_bonus_control()
-    enabled = bool(control.get("enabled", JOIN_BONUS_ENABLED))
-    await query.answer()
-    await query.edit_message_text(
-        "🎁 **JOIN BONUS CONTROL**\n\n"
-        f"Current Status: {'🟢 ON' if enabled else '🔴 OFF'}\n\n"
-        "ON = Eligible users can claim the Join Bonus.\n"
-        "OFF = New Join Bonus claims are paused.\n\n"
-        "This switch does not change existing balances or claim history.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                "🔴 Turn OFF" if enabled else "🟢 Turn ON",
-                callback_data="admin_join_bonus_toggle",
-            )],
-            [InlineKeyboardButton("🔄 Refresh", callback_data="admin_join_bonus_control")],
-            [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")],
-        ]),
-        parse_mode="Markdown",
-    )
-
-
-async def admin_join_bonus_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query or not admin_only(query.from_user.id):
-        if query:
-            await query.answer("🚫 Admin only.", show_alert=True)
-        return
-    control = get_join_bonus_control()
-    current = bool(control.get("enabled", JOIN_BONUS_ENABLED))
-    new_status = not current
-    result = set_join_bonus_control(enabled=new_status)
-    if not result.acknowledged:
-        await query.answer("Could not update Join Bonus status.", show_alert=True)
-        return
-    await query.answer("Join Bonus turned ON." if new_status else "Join Bonus turned OFF.")
-    await admin_join_bonus_control_page(update, context)
 
 
 # ==================================================
@@ -3927,14 +3870,6 @@ async def admin_callback(
 
     if data in ("admin", "admin_panel"):
         await admin_panel(update, context)
-        return
-
-    if data == "admin_join_bonus_control":
-        await admin_join_bonus_control_page(update, context)
-        return
-
-    if data == "admin_join_bonus_toggle":
-        await admin_join_bonus_toggle(update, context)
         return
 
     if data.startswith("admin_users_page_"):

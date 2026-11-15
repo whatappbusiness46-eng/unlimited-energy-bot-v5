@@ -298,6 +298,18 @@ async def offerwallme_shortlink_callback(update: Update, context: ContextTypes.D
     query = update.callback_query
     if not query:
         return
+    await query.answer()
+    await _safe_edit(
+        query,
+        "🔗 **SHORTLINKS DISABLED**\\n\\nShortlink earning is currently turned off. Please use Offers or Tasks instead.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎁 Offers", callback_data="offers")],
+            [InlineKeyboardButton("📋 Tasks", callback_data="tasks")],
+            [InlineKeyboardButton("🏠 Home", callback_data="home")],
+        ]),
+        parse_mode="Markdown",
+    )
+    return
     data = str(query.data or "")
     prefix = "owshort_"
     if not data.startswith(prefix):
@@ -378,8 +390,24 @@ async def shortlinks_page(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    """Render the user's available shortlinks."""
+    """Shortlinks are intentionally disabled in the member menu."""
     user = update.effective_user
+    if not user:
+        return
+    disabled_text = (
+        "🔗 **SHORTLINKS**\\n\\n"
+        "Shortlink earning is currently disabled. Please use the Offerwall and Tasks sections."
+    )
+    disabled_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎁 Offers", callback_data="offers")],
+        [InlineKeyboardButton("📋 Tasks", callback_data="tasks")],
+        [InlineKeyboardButton("🏠 Home", callback_data="home")],
+    ])
+    if update.callback_query:
+        await _safe_edit(update.callback_query, disabled_text, reply_markup=disabled_markup, parse_mode="Markdown")
+    elif update.message:
+        await update.message.reply_text(disabled_text, reply_markup=disabled_markup, parse_mode="Markdown")
+    return
     if not user:
         return
 
@@ -458,6 +486,17 @@ async def shortlink_callback(
         return
 
     await query.answer()
+    await _safe_edit(
+        query,
+        "🔗 **SHORTLINKS DISABLED**\\n\\nShortlink earning is currently turned off. Please use Offers or Tasks instead.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎁 Offers", callback_data="offers")],
+            [InlineKeyboardButton("📋 Tasks", callback_data="tasks")],
+            [InlineKeyboardButton("🏠 Home", callback_data="home")],
+        ]),
+        parse_mode="Markdown",
+    )
+    return
 
     data = str(query.data or "")
 
