@@ -126,6 +126,8 @@ def admin_menu():
             )
         ],
 
+        [InlineKeyboardButton("🗑️ Delete User Data", callback_data="admin_delete_user")],
+
         [
             InlineKeyboardButton(
                 "💰 Manage Balance",
@@ -2767,6 +2769,34 @@ async def admin_text_handler(
         return True
 
     # ==================================================
+    # DELETE ONE USER'S DATA
+    # ==================================================
+    if action == "delete_user_data":
+        try:
+            target_id = int(text)
+            if target_id <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ Send a valid numeric Telegram User ID.")
+            return True
+        target = get_user(target_id, create=False)
+        if not target:
+            await update.message.reply_text("❌ User not found.", reply_markup=admin_back())
+            context.user_data.pop("admin_action", None)
+            return True
+        context.user_data.pop("admin_action", None)
+        context.user_data["delete_user_target"] = target_id
+        display_name = html.escape(str(target.get("first_name") or target.get("username") or "Member"))
+        await update.message.reply_text(
+            "⚠️ **FINAL CONFIRMATION**\n\n"
+            f"User: {display_name}\nUser ID: `{target_id}`\n\n"
+            "This cannot be undone. Delete this user's saved account and history?",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ YES, DELETE USER DATA", callback_data="admin_delete_user_confirm")], [InlineKeyboardButton("❌ Cancel", callback_data="admin")]]),
+            parse_mode="Markdown"
+        )
+        return True
+
+    # ==================================================
     # FIND USER
     # ==================================================
 
@@ -3845,6 +3875,62 @@ async def admin_maintenance_indexes(update, context):
 # ADMIN CALLBACK ROUTER
 # ==================================================
 
+async def admin_delete_user_start(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id):
+        if q: await q.answer("🚫 Admin only.", show_alert=True)
+        return
+    await q.answer()
+    context.user_data["admin_action"] = "delete_user_data"
+    await q.edit_message_text(
+        "🗑️ **DELETE ONE USER'S DATA**\n\nSend the Telegram User ID.\n\nThis will remove that user's account, balances, bonuses, VIP/premium status, task/referral progress, withdrawals and payment history. Bot settings, task definitions and other users will remain unchanged.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="admin")]]),
+        parse_mode="Markdown"
+    )
+
+
+async def admin_delete_user_confirm(update, context):
+    q = update.callback_query
+    if not q or not admin_only(q.from_user.id):
+        if q: await q.answer("🚫 Admin only.", show_alert=True)
+        return
+    target_id = int(context.user_data.get("delete_user_target", 0) or 0)
+    if target_id <= 0 or not get_user(target_id, create=False):
+        context.user_data.pop("delete_user_target", None)
+        await q.answer("User not found or confirmation expired.", show_alert=True)
+        await admin_panel(update, context)
+        return
+    # Keep provider_events as an anti-replay/audit ledger: deleting it could let an old
+    # provider postback credit a freshly recreated account. All other per-user records go.
+    collection_names = (
+        "transactions", "withdrawals", "membership_payments", "payments",
+        "task_completions", "security_logs", "offerwall_task_proofs",
+        "offerwall_task_submissions", "provider_pending", "referral_claims", "referral_milestone_claims",
+        "join_bonus_claims", "activity", "activities", "user_activity",
+    )
+    deleted = {}
+    for name in collection_names:
+        try:
+            result = db[name].delete_many({"user_id": target_id})
+            deleted[name] = int(result.deleted_count)
+        except Exception:
+            logger.exception("Could not delete user data from %s", name)
+            raise
+    users.delete_one({"user_id": target_id})
+    context.user_data.pop("delete_user_target", None)
+    context.user_data.pop("admin_action", None)
+    total = sum(deleted.values()) + 1
+    await q.answer("User data deleted.", show_alert=True)
+    await q.edit_message_text(
+        "✅ **USER DATA DELETED**\n\n"
+        f"User ID: `{target_id}`\n"
+        f"Deleted account and related records: **{total}**\n\n"
+        "If this person starts the bot again, a fresh account and the normal new-user bonus flow will apply.\n\n"
+        "Note: provider conversion-event records are retained privately to prevent old postbacks from paying twice.",
+        reply_markup=admin_back(), parse_mode="Markdown"
+    )
+
+
 async def admin_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -3870,6 +3956,13 @@ async def admin_callback(
 
     if data in ("admin", "admin_panel"):
         await admin_panel(update, context)
+        return
+
+    if data == "admin_delete_user":
+        await admin_delete_user_start(update, context)
+        return
+    if data == "admin_delete_user_confirm":
+        await admin_delete_user_confirm(update, context)
         return
 
     if data.startswith("admin_users_page_"):
